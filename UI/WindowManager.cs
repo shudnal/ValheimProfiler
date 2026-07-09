@@ -201,41 +201,75 @@ internal sealed class WindowManager
         _theme.EnsureStyles();
         GUI.tooltip = string.Empty;
 
-        // Resize input is handled before window contents so a scrollbar under the
-        // lower-right handle cannot consume the initial mouse-down event.
-        HandleResizeInput(window);
+        Event current = Event.current;
+        Vector2 originalMousePosition = current.mousePosition;
+        bool syntheticMousePosition = TryApplyRealtimeMousePosition(window, current);
 
         try
         {
-            window.DrawContents(id);
-        }
-        catch (Exception ex)
-        {
-            GUILayout.Label($"Window error: {ex.GetType().Name}: {ex.Message}");
-        }
+            // Resize input is handled before window contents so a scrollbar under the
+            // lower-right handle cannot consume the initial mouse-down event.
+            HandleResizeInput(window);
 
-        DrawWindowBorder(window);
-        DrawResizeHandle(window);
-
-        // Tool windows keep the proven VCM behaviour and clip tooltips to their owner.
-        // The compact launcher is different: its tooltips are captured here and drawn
-        // after all GUI.Window calls so they can extend beyond the launcher's bounds.
-        if (window.AllowTooltipOverflow)
-        {
-            string tooltip = GUI.tooltip;
-            if (!string.IsNullOrEmpty(tooltip))
+            try
             {
-                _overflowTooltip = tooltip;
-                _overflowTooltipPointer = window.Rect.position + Event.current.mousePosition;
+                window.DrawContents(id);
             }
-        }
-        else
-        {
-            _tooltips.Draw(new Rect(0f, 0f, window.Rect.width, window.Rect.height));
-        }
+            catch (Exception ex)
+            {
+                GUILayout.Label($"Window error: {ex.GetType().Name}: {ex.Message}");
+            }
 
-        GUI.DragWindow(new Rect(0f, 0f, Mathf.Max(0f, window.Rect.width - 4f), TitleBarHeight));
+            DrawWindowBorder(window);
+            DrawResizeHandle(window);
+
+            // Tool windows keep the proven VCM behaviour and clip tooltips to their owner.
+            // The compact launcher is different: its tooltips are captured here and drawn
+            // after all GUI.Window calls so they can extend beyond the launcher's bounds.
+            if (window.AllowTooltipOverflow)
+            {
+                string tooltip = GUI.tooltip;
+                if (!string.IsNullOrEmpty(tooltip))
+                {
+                    _overflowTooltip = tooltip;
+                    _overflowTooltipPointer = window.Rect.position + current.mousePosition;
+                }
+            }
+            else
+            {
+                _tooltips.Draw(new Rect(0f, 0f, window.Rect.width, window.Rect.height));
+            }
+
+            GUI.DragWindow(new Rect(0f, 0f, Mathf.Max(0f, window.Rect.width - 4f), TitleBarHeight));
+        }
+        finally
+        {
+            if (syntheticMousePosition)
+                current.mousePosition = originalMousePosition;
+        }
     }
+
+    private bool TryApplyRealtimeMousePosition(ProfilerWindow window, Event current)
+    {
+        if (window == null || current == null)
+            return false;
+
+        // Valheim's mouse blocking paths can leave IMGUI repaint/layout events with
+        // a stale (0, 0) mouse position while real mouse coordinates are still
+        // available through UnityInput. GUI.tooltip is evaluated during those events,
+        // so feed IMGUI the current logical mouse position for hover-only work.
+        if (current.type != EventType.Repaint && current.type != EventType.Layout)
+            return false;
+
+        Vector2 localMouse = _scale.GetLogicalMousePosition() - window.Rect.position;
+        if (!IsFinite(localMouse.x) || !IsFinite(localMouse.y))
+            return false;
+
+        current.mousePosition = localMouse;
+        return true;
+    }
+
+    private static bool IsFinite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
 
     private void HandleResizeInput(ProfilerWindow window)
     {

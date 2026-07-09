@@ -1,5 +1,10 @@
 # Valheim Profiler
 
+
+## 0.8.7
+
+- fixed IMGUI tooltip positioning in `Prevent mouse` mode by using the current Unity mouse position for repaint/layout hover events, preventing tooltips from appearing at the upper-left corner or only after a mouse click.
+
 ## 0.8.6
 
 - Patch Profiler now makes the separate `Transpiled methods` selection explicit: the Mods tab highlights that whole-target timing is independently enabled, provides a direct enable button, and explains that `Transpiler call` rows still follow their source mod;
