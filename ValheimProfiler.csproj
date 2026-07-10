@@ -4,10 +4,14 @@
     <TargetFramework>net472</TargetFramework>
     <LangVersion>11</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Nullable>disable</Nullable>
     <AssemblyName>ValheimProfiler</AssemblyName>
     <RootNamespace>ValheimProfiler</RootNamespace>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <InformationalVersion>1.0.0</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -53,8 +57,6 @@
     </Reference>
   </ItemGroup>
 
-  <Target Name="PostBuild" AfterTargets="PostBuildEvent">
-    <Exec Command="echo Copy to r2 folder&#xD;&#xA;xcopy &quot;$(TargetDir)\$(TargetFileName)&quot; &quot;D:\r2modman\Valheim\profiles\beta\BepInEx\plugins\shudnal-$(SolutionName)\&quot; /q /y /i" />
-  </Target>
+  <Import Project="Thunderstore.targets" Condition="Exists('Thunderstore.targets')" />
 
 </Project>

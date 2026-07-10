@@ -1,5 +1,4 @@
 # Updates Thunderstore package manifest version_number.
-# Called from MSBuild after package files are prepared and before ZipThunderstore.
 
 param(
     [Parameter(Mandatory = $true)][string]$ManifestPath,
@@ -9,19 +8,26 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
-$ProjectRoot = $PSScriptRoot
-$RepositoryRoot = Split-Path -Parent $ProjectRoot
-$CommonRoot = Split-Path -Parent $RepositoryRoot
-$CommonScript = Join-Path $CommonRoot "API\CommonPublish.ps1"
-. $CommonScript
+function Normalize-PackageVersion {
+    param([Parameter(Mandatory = $true)][string]$Value)
 
-Assert-FileExists -Path $ManifestPath
-$PackageVersion = Normalize-PackageVersion -Version $Version -Name "Thunderstore version_number"
+    $Trimmed = $Value.Trim()
+    if ($Trimmed -match '^(\d+)\.(\d+)\.(\d+)(?:\.\d+)?(?:[-+].*)?$') {
+        return "$($Matches[1]).$($Matches[2]).$($Matches[3])"
+    }
 
-$Manifest = Get-JsonFile -Path $ManifestPath
+    throw "Thunderstore version_number must resolve to MAJOR.MINOR.PATCH. Received: $Value"
+}
+
+if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+    throw "Thunderstore manifest was not found: $ManifestPath"
+}
+
+$PackageVersion = Normalize-PackageVersion -Value $Version
+$Manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
 $OldVersion = [string]$Manifest.version_number
 $Manifest.version_number = $PackageVersion
-Save-JsonFile -Object $Manifest -Path $ManifestPath
+$Manifest | ConvertTo-Json -Depth 32 | Set-Content -LiteralPath $ManifestPath -Encoding UTF8
 
 if ($OldVersion -eq $PackageVersion) {
     Write-Host "Thunderstore manifest version is already $PackageVersion"

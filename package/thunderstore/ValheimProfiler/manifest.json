@@ -1,9 +1,9 @@
-{
-  "name": "ValheimProfiler",
-  "version_number": "1.0.0",
-  "website_url": "https://github.com/shudnal/ValheimProfiler",
-  "description": "",
-  "dependencies": [
-    "denikson-BepInExPack_Valheim-5.4.2333"
-  ]
+﻿{
+    "name":  "ValheimProfiler",
+    "version_number":  "1.0.0",
+    "website_url":  "https://github.com/shudnal/ValheimProfiler",
+    "description":  "In-game Valheim profiling toolkit for Harmony patches, MonoBehaviour callbacks, update loops, logs, and dedicated-server network diagnostics.",
+    "dependencies":  [
+                         "denikson-BepInExPack_Valheim-5.4.2333"
+                     ]
 }

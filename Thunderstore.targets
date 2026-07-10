@@ -3,12 +3,11 @@
 
   <PropertyGroup>
     <ThunderstorePackageName>ValheimProfiler</ThunderstorePackageName>
-    <ThunderstorePackageDir>$(MSBuildProjectDirectory)\package\thunderstore\</ThunderstorePackageDir>
+    <ThunderstorePackageDir>$(MSBuildProjectDirectory)\package\thunderstore\$(ThunderstorePackageName)\</ThunderstorePackageDir>
     <ThunderstoreZipPath>$(MSBuildProjectDirectory)\package\$(ThunderstorePackageName).zip</ThunderstoreZipPath>
-    <ValheimProfilerOutputDir>$(MSBuildProjectDirectory)\..\ValheimProfiler\bin\$(Configuration)\$(TargetFramework)\</ValheimProfilerOutputDir>
     <BuildThunderstorePackageOnBuild Condition="'$(BuildThunderstorePackageOnBuild)' == ''">true</BuildThunderstorePackageOnBuild>
-    <GitHubReleaseDir>$(MSBuildProjectDirectory)\package\github\</GitHubReleaseDir>
-    <ReleaseChecksumsPath>$(GitHubReleaseDir)SHA256SUMS.txt</ReleaseChecksumsPath>
+    <CopyToR2ModManOnBuild Condition="'$(CopyToR2ModManOnBuild)' == ''">false</CopyToR2ModManOnBuild>
+    <R2ModManPluginDirectory Condition="'$(R2ModManPluginDirectory)' == ''">D:\r2modman\Valheim\profiles\beta\BepInEx\plugins\shudnal-$(ThunderstorePackageName)\</R2ModManPluginDirectory>
   </PropertyGroup>
 
   <Target
@@ -16,66 +15,40 @@
     AfterTargets="Build"
     Condition="'$(DesignTimeBuild)' != 'true' and '$(BuildThunderstorePackageOnBuild)' == 'true'">
 
-    <Error Condition="!Exists('$(TargetPath)')" Text="Plugin assembly was not found: $(TargetPath)" />
-    <Error Condition="!Exists('$(ValheimProfilerOutputDir)ValheimProfiler.dll')" Text="Core assembly was not found: $(ValheimProfilerOutputDir)ValheimProfiler.dll" />
-    <Error Condition="!Exists('$(ValheimProfilerOutputDir)ValheimProfiler.xml')" Text="Core XML documentation was not found: $(ValheimProfilerOutputDir)ValheimProfiler.xml" />
+    <PropertyGroup>
+      <_ValheimProfilerPackageAssembly Condition="'$(ValheimProfilerPackageAssembly)' != ''">$(ValheimProfilerPackageAssembly)</_ValheimProfilerPackageAssembly>
+      <_ValheimProfilerPackageAssembly Condition="'$(_ValheimProfilerPackageAssembly)' == ''">$(TargetPath)</_ValheimProfilerPackageAssembly>
+    </PropertyGroup>
+
+    <Error Condition="!Exists('$(_ValheimProfilerPackageAssembly)')" Text="Plugin assembly was not found: $(_ValheimProfilerPackageAssembly)" />
     <Error Condition="!Exists('$(ThunderstorePackageDir)manifest.json')" Text="Thunderstore manifest was not found: $(ThunderstorePackageDir)manifest.json" />
     <Error Condition="!Exists('$(ThunderstorePackageDir)icon.png')" Text="Thunderstore icon was not found: $(ThunderstorePackageDir)icon.png" />
-    <Error Condition="!Exists('$(ThunderstorePackageDir)README.md')" Text="Publication README was not found: $(ThunderstorePackageDir)README.md" />
+    <Error Condition="!Exists('$(ThunderstorePackageDir)README.md')" Text="Thunderstore README was not found: $(ThunderstorePackageDir)README.md" />
+    <Error Condition="!Exists('$(ThunderstorePackageDir)CHANGELOG.md')" Text="Thunderstore changelog was not found: $(ThunderstorePackageDir)CHANGELOG.md" />
     <Error Condition="!Exists('$(MSBuildProjectDirectory)\UpdateThunderstoreManifest.ps1')" Text="UpdateThunderstoreManifest.ps1 was not found." />
-    <Error Condition="!Exists('$(MSBuildProjectDirectory)\GenerateChecksums.ps1')" Text="GenerateChecksums.ps1 was not found." />
-    <Error Condition="!Exists('$(MSBuildProjectDirectory)\..\..\API\CommonPublish.ps1')" Text="CommonPublish.ps1 was not found: $(MSBuildProjectDirectory)\..\..\API\CommonPublish.ps1" />
-    <Error Condition="!Exists('$(MSBuildProjectDirectory)\..\CHANGELOG.md')" Text="Root changelog was not found: $(MSBuildProjectDirectory)\..\CHANGELOG.md" />
-    <Error Condition="!Exists('$(MSBuildProjectDirectory)\..\LICENSE')" Text="Root license was not found: $(MSBuildProjectDirectory)\..\LICENSE" />
-    <Error Condition="!Exists('$(MSBuildProjectDirectory)\..\THIRD_PARTY_NOTICES.md')" Text="Third-party notices were not found: $(MSBuildProjectDirectory)\..\THIRD_PARTY_NOTICES.md" />
 
-    <GetAssemblyIdentity AssemblyFiles="$(TargetPath)">
-      <Output TaskParameter="Assemblies" ItemName="_ValheimProfilerPluginIdentity" />
+    <GetAssemblyIdentity AssemblyFiles="$(_ValheimProfilerPackageAssembly)">
+      <Output TaskParameter="Assemblies" ItemName="_ValheimProfilerAssemblyIdentity" />
     </GetAssemblyIdentity>
 
     <PropertyGroup>
-      <PackageVersion>%(_ValheimProfilerPluginIdentity.Version)</PackageVersion>
+      <PackageVersion>%(_ValheimProfilerAssemblyIdentity.Version)</PackageVersion>
     </PropertyGroup>
 
-    <Error Condition="'$(PackageVersion)' == ''" Text="Package version was not resolved from $(TargetPath)." />
+    <Error Condition="'$(PackageVersion)' == ''" Text="Package version was not resolved from $(_ValheimProfilerPackageAssembly)." />
 
-    <MakeDir Directories="$(ThunderstorePackageDir);$(GitHubReleaseDir)" />
+    <MakeDir Directories="$(ThunderstorePackageDir)" />
 
     <Copy
       SourceFiles="$(ThunderstorePackageDir)README.md"
-      DestinationFiles="$(MSBuildProjectDirectory)\..\README.md"
+      DestinationFiles="$(MSBuildProjectDirectory)\README.md"
       SkipUnchangedFiles="true" />
-
-    <ItemGroup>
-      <_ThunderstoreFiles Include="$(TargetPath)">
-        <TargetPath>$(ThunderstorePackageDir)ValheimProfiler.dll</TargetPath>
-      </_ThunderstoreFiles>
-      <_ThunderstoreFiles Include="$(MSBuildProjectDirectory)\..\CHANGELOG.md">
-        <TargetPath>$(ThunderstorePackageDir)CHANGELOG.md</TargetPath>
-      </_ThunderstoreFiles>
-    </ItemGroup>
 
     <Copy
-      SourceFiles="@(_ThunderstoreFiles)"
-      DestinationFiles="@(_ThunderstoreFiles->'%(TargetPath)')"
+      SourceFiles="$(_ValheimProfilerPackageAssembly)"
+      DestinationFiles="$(ThunderstorePackageDir)$(ThunderstorePackageName).dll"
       SkipUnchangedFiles="true" />
 
-    <ItemGroup>
-      <_GitHubReleaseFiles Include="$(ValheimProfilerOutputDir)ValheimProfiler.dll">
-        <TargetPath>$(GitHubReleaseDir)ValheimProfiler.dll</TargetPath>
-      </_GitHubReleaseFiles>
-      <_GitHubReleaseFiles Include="$(ThunderstorePackageDir)README.md">
-        <TargetPath>$(GitHubReleaseDir)README.md</TargetPath>
-      </_GitHubReleaseFiles>
-      <_GitHubReleaseFiles Include="$(MSBuildProjectDirectory)\..\CHANGELOG.md">
-        <TargetPath>$(GitHubReleaseDir)CHANGELOG.md</TargetPath>
-      </_GitHubReleaseFiles>
-    </ItemGroup>
-
-    <Copy
-      SourceFiles="@(_GitHubReleaseFiles)"
-      DestinationFiles="@(_GitHubReleaseFiles->'%(TargetPath)')"
-      SkipUnchangedFiles="true" />
 
     <Exec
       Command="powershell -ExecutionPolicy Bypass -NoProfile -File &quot;$(MSBuildProjectDirectory)\UpdateThunderstoreManifest.ps1&quot; -ManifestPath &quot;$(ThunderstorePackageDir)manifest.json&quot; -Version &quot;$(PackageVersion)&quot;" />
@@ -85,35 +58,25 @@
       DestinationFile="$(ThunderstoreZipPath)"
       Overwrite="true" />
 
-    <Message Text="Repository README updated from publication README: $(MSBuildProjectDirectory)\..\README.md" Importance="High" />
-    <Message Text="Detected package version from plugin DLL: $(PackageVersion)" Importance="High" />
-    <Message Text="Thunderstore package updated: $(ThunderstorePackageDir)" Importance="High" />
+    <Message Text="Detected package version from DLL: $(PackageVersion)" Importance="High" />
+    <Message Text="Thunderstore package directory updated: $(ThunderstorePackageDir)" Importance="High" />
     <Message Text="Thunderstore archive created: $(ThunderstoreZipPath)" Importance="High" />
-    <Message Text="Release checksums created: $(ReleaseChecksumsPath)" Importance="High" />
   </Target>
 
-  <Target Name="CopyDLLPlugins" AfterTargets="BuildValheimProfilerThunderstorePackage">
+  <Target
+    Name="CopyValheimProfilerToR2ModMan"
+    AfterTargets="Build"
+    Condition="'$(DesignTimeBuild)' != 'true' and '$(CopyToR2ModManOnBuild)' == 'true'">
+
     <PropertyGroup>
-      <R2ModManPluginDirectory>D:\r2modman\Valheim\profiles\beta\BepInEx\plugins\shudnal-$(SolutionName)\</R2ModManPluginDirectory>
-      <ValheimProfilerLibraryPath>$(TargetDir)ValheimProfiler.dll</ValheimProfilerLibraryPath>
+      <_ValheimProfilerPackageAssembly Condition="'$(ValheimProfilerPackageAssembly)' != ''">$(ValheimProfilerPackageAssembly)</_ValheimProfilerPackageAssembly>
+      <_ValheimProfilerPackageAssembly Condition="'$(_ValheimProfilerPackageAssembly)' == ''">$(TargetPath)</_ValheimProfilerPackageAssembly>
     </PropertyGroup>
 
-    <Error Condition="!Exists('$(TargetPath)')" Text="Plugin DLL was not found: $(TargetPath)" />
-    <Error Condition="!Exists('$(ValheimProfilerLibraryPath)')" Text="ValheimProfiler library DLL was not found: $(ValheimProfilerLibraryPath)" />
-
+    <Error Condition="!Exists('$(_ValheimProfilerPackageAssembly)')" Text="Plugin DLL was not found: $(_ValheimProfilerPackageAssembly)" />
     <MakeDir Directories="$(R2ModManPluginDirectory)" />
-
-    <ItemGroup>
-      <_R2ModManPluginFiles Include="$(TargetPath)" />
-      <_R2ModManPluginFiles Include="$(ValheimProfilerLibraryPath)" />
-    </ItemGroup>
-
-    <Copy
-      SourceFiles="@(_R2ModManPluginFiles)"
-      DestinationFolder="$(R2ModManPluginDirectory)"
-      SkipUnchangedFiles="true" />
-
-    <Message Text="Copied ValheimProfiler.dll to plugins folder: $(R2ModManPluginDirectory)" Importance="High" />
+    <Copy SourceFiles="$(_ValheimProfilerPackageAssembly)" DestinationFolder="$(R2ModManPluginDirectory)" SkipUnchangedFiles="true" />
+    <Message Text="Copied $(ThunderstorePackageName).dll to plugins folder: $(R2ModManPluginDirectory)" Importance="High" />
   </Target>
 
 </Project>
