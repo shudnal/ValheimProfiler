@@ -89,3 +89,15 @@ Valheim Profiler is a developer tool and patches a broad set of diagnostic targe
 - [GitHub](https://github.com/shudnal/ValheimProfiler)
 - [Discord](https://discord.gg/e3UtQB8GFK)
 - [Buy Me a Coffee](https://buymeacoffee.com/shudnal)
+
+## Dependencies
+
+- [BepInExPack Valheim 5.4.2350](https://thunderstore.io/c/valheim/p/denikson/BepInExPack_Valheim/)
+
+Install ConditionalConfigSync as a separate dependency; do not copy its DLLs into this mod's package.
+
+## Donation
+[Buy Me a Coffee](https://buymeacoffee.com/shudnal)
+
+## Discord
+[Join server](https://discord.gg/e3UtQB8GFK)

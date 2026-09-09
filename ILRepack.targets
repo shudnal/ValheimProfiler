@@ -6,7 +6,7 @@
     <ThunderstorePackageDir>$(MSBuildProjectDirectory)\package\thunderstore\$(ThunderstorePackageName)\</ThunderstorePackageDir>
     <ThunderstoreZipPath>$(MSBuildProjectDirectory)\package\$(ThunderstorePackageName).zip</ThunderstoreZipPath>
     <BuildThunderstorePackageOnBuild Condition="'$(BuildThunderstorePackageOnBuild)' == ''">true</BuildThunderstorePackageOnBuild>
-    <CopyToR2ModManOnBuild Condition="'$(CopyToR2ModManOnBuild)' == ''">false</CopyToR2ModManOnBuild>
+    <CopyToR2ModManOnBuild Condition="'$(CopyToR2ModManOnBuild)' == ''">true</CopyToR2ModManOnBuild>
     <R2ModManPluginDirectory Condition="'$(R2ModManPluginDirectory)' == ''">D:\r2modman\Valheim\profiles\beta\BepInEx\plugins\shudnal-$(ThunderstorePackageName)\</R2ModManPluginDirectory>
   </PropertyGroup>
 

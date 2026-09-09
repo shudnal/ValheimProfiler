@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <ReferencePath>D:\work\source\repos\Assemblies\stable\publicized_assemblies\;D:\work\source\repos\Assemblies\stable\;D:\work\source\repos\Assemblies\Harmony\;D:\work\source\repos\Assemblies\Managers\</ReferencePath>
     <TargetFramework>net472</TargetFramework>
     <LangVersion>11</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -8,10 +9,10 @@
     <Nullable>disable</Nullable>
     <AssemblyName>ValheimProfiler</AssemblyName>
     <RootNamespace>ValheimProfiler</RootNamespace>
-    <Version>1.0.0</Version>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
-    <InformationalVersion>1.0.0</InformationalVersion>
+    <Version>1.0.1</Version>
+    <AssemblyVersion>1.0.1.0</AssemblyVersion>
+    <FileVersion>1.0.1.0</FileVersion>
+    <InformationalVersion>1.0.1</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -27,12 +28,15 @@
     </Reference>
     <Reference Include="assembly_guiutils">
       <HintPath>..\Assemblies\stable\publicized_assemblies\assembly_guiutils_publicized.dll</HintPath>
+      <HintPath Condition="Exists('..\Assemblies\stable\publicized_assemblies\assembly_guiutils.dll')">..\Assemblies\stable\publicized_assemblies\assembly_guiutils.dll</HintPath>
     </Reference>
     <Reference Include="assembly_utils">
       <HintPath>..\Assemblies\stable\publicized_assemblies\assembly_utils_publicized.dll</HintPath>
+      <HintPath Condition="Exists('..\Assemblies\stable\publicized_assemblies\assembly_utils.dll')">..\Assemblies\stable\publicized_assemblies\assembly_utils.dll</HintPath>
     </Reference>
     <Reference Include="assembly_valheim">
       <HintPath>..\Assemblies\stable\publicized_assemblies\assembly_valheim_publicized.dll</HintPath>
+      <HintPath Condition="Exists('..\Assemblies\stable\publicized_assemblies\assembly_valheim.dll')">..\Assemblies\stable\publicized_assemblies\assembly_valheim.dll</HintPath>
     </Reference>
     <Reference Include="BepInEx">
       <HintPath>..\Assemblies\Harmony\BepInEx.dll</HintPath>
@@ -56,7 +60,5 @@
       <HintPath>..\Assemblies\stable\UnityEngine.UI.dll</HintPath>
     </Reference>
   </ItemGroup>
-
-  <Import Project="Thunderstore.targets" Condition="Exists('Thunderstore.targets')" />
 
 </Project>
