@@ -13,7 +13,7 @@ public sealed class ValheimProfilerPlugin : BaseUnityPlugin
 {
     public const string PluginGuid = "shudnal.ValheimProfiler";
     public const string PluginName = "Valheim Profiler";
-    public const string PluginVersion = "1.0.1";
+    public const string PluginVersion = "1.0.2";
 
     internal const string CoreHarmonyId = PluginGuid + ".Core";
 
