@@ -6,14 +6,16 @@ namespace ValheimProfiler.Valheim;
 
 internal sealed class ValheimCursorController
 {
-    private bool _captured;
-    private CursorLockMode _previousLockState;
-    private bool _previousVisible;
+    private bool _acquired;
+    private CursorLockMode _savedLockState;
+    private bool _savedRequested;
+    private bool _savedVisible;
+    private bool _savedHardwareVisible;
 
     internal void Update(bool active)
     {
         if (active)
-            Unlock();
+            Acquire();
         else
             Release();
     }
@@ -21,47 +23,85 @@ internal sealed class ValheimCursorController
     internal void LateUpdate(bool active)
     {
         if (active)
-            Unlock();
+            ApplyWindowCursor();
     }
 
     internal void OnGUI(bool active)
     {
         if (active)
-            Unlock();
+            ApplyWindowCursor();
+    }
+
+    internal void OnApplicationFocus(bool focused, bool active)
+    {
+        if (focused && active)
+            ApplyWindowCursor();
+    }
+
+    internal void ApplyWindowCursor()
+    {
+        if (ValheimProfilerPlugin.Instance?.App?.HasVisibleWindows != true || !Application.isFocused)
+            return;
+
+        ZCursor.LockState = CursorLockMode.None;
+        if (ZInput.instance != null)
+            ZCursor.Show();
+        else
+            Cursor.visible = true;
     }
 
     internal void Release()
     {
-        if (!_captured)
+        if (!_acquired)
             return;
 
-        Cursor.lockState = _previousLockState;
-        Cursor.visible = _previousVisible;
-        _captured = false;
-    }
+        _acquired = false;
 
-    internal void OverrideReleaseState(CursorLockMode lockState, bool visible)
-    {
-        if (!_captured)
-            return;
-
-        // Scene transitions may replace the native cursor state while a profiler
-        // window keeps the actual cursor unlocked. Update only the state restored
-        // when the profiler UI closes; leave the currently visible cursor alone.
-        _previousLockState = lockState;
-        _previousVisible = visible;
-    }
-
-    private void Unlock()
-    {
-        if (!_captured || Cursor.lockState != CursorLockMode.None || !Cursor.visible)
+        if (ZInput.instance != null)
         {
-            _previousLockState = Cursor.lockState;
-            _previousVisible = Cursor.visible;
-            _captured = true;
+            // Let the current scene decide the cursor state. This is more reliable than restoring
+            // a snapshot captured before a menu/world transition.
+            if (GameCamera.instance)
+            {
+                GameCamera.instance.UpdateMouseCapture();
+                if (Menu.instance && Menu.IsActive())
+                    Menu.instance.UpdateCursor();
+                return;
+            }
+
+            if (FejdStartup.instance)
+            {
+                FejdStartup.instance.UpdateCursor();
+                return;
+            }
+
+            if (Menu.instance && Menu.IsActive())
+            {
+                Menu.instance.UpdateCursor();
+                return;
+            }
+
+            ZCursor.LockState = _savedLockState;
+            ZCursor.SetRequested(_savedRequested);
+            ZCursor.SetVisible(_savedVisible);
+            return;
         }
 
-        Cursor.lockState = CursorLockMode.None;
-        Cursor.visible = true;
+        ZCursor.LockState = _savedLockState;
+        Cursor.visible = _savedHardwareVisible;
+    }
+
+    private void Acquire()
+    {
+        if (!_acquired)
+        {
+            _savedLockState = ZCursor.LockState;
+            _savedRequested = ZCursor.IsRequested;
+            _savedVisible = ZCursor.IsVisible;
+            _savedHardwareVisible = Cursor.visible;
+            _acquired = true;
+        }
+
+        ApplyWindowCursor();
     }
 }

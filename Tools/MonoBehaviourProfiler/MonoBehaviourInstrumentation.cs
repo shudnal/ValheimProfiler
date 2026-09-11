@@ -43,6 +43,9 @@ internal sealed partial class MonoBehaviourProfilerTool
                     GC.CollectionCount(2) != instance._lastObservedGc2;
             }
 
+            if (gcSample && instance._ignoreGcAllocations)
+                return __exception;
+
             int frame = Time.frameCount;
             float now = Time.realtimeSinceStartup;
             Type runtimeType = __instance?.GetType();

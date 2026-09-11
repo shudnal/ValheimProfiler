@@ -74,6 +74,9 @@ internal sealed partial class PatchProfilerTool
                     GC.CollectionCount(2) != inst._lastObservedGc2;
             }
 
+            if (gcSample && inst._ignoreGcAllocations)
+                return __exception;
+
             int frame = Time.frameCount;
             float now = Time.realtimeSinceStartup;
             MethodBase activeTranspiledTarget = CurrentActiveTranspiledTarget();

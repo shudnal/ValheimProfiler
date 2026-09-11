@@ -48,7 +48,7 @@ internal sealed class ValheimProfilerConfig
         BlockGameInput = config.Bind("Valheim", "Block game input", true,
             "Block all Valheim gameplay input while at least one profiler window is visible. IMGUI input and profiler hotkeys remain available.");
         BlockMouseInput = config.Bind("Valheim", "Block mouse input", false,
-            "Block gameplay mouse buttons, wheel and camera movement while profiler windows are visible, while leaving keyboard movement, inventory and other hotkeys available. Full input blocking takes precedence.");
+            "Block Valheim mouse-driven gameplay and background UI interactions while profiler windows are visible, while leaving keyboard/controller input available. Full input blocking takes precedence.");
         PauseGame = config.Bind("Valheim", "Pause game", false,
             "Pause the game, when possible, while profiler windows are visible.");
         UseValheimGuiScale = config.Bind("Interface", "Use Valheim GUI scaling", true,
@@ -74,6 +74,11 @@ internal sealed class ValheimProfilerConfig
             "Max over 60 sec sort column",
             "ThirdMax",
             "Descending sort column restored when the Patch Profiler opens the Max over 60 sec view.");
+        PatchProfilerIgnoreGcAllocations = config.Bind(
+            "Patch Profiler",
+            "Ignore gc allocations",
+            false,
+            "Discard an entire measured sample when the Patch Profiler GC heuristic detects a garbage collection during that sample. Discarded samples do not affect calls, averages, maxima, percentiles, sample counts, or GC sample counts.");
         MonoBehaviourProfilerAvgSortColumn = config.Bind(
             "MonoBehaviour Frame Profiler",
             "Over 1 sec sort column",
@@ -84,6 +89,11 @@ internal sealed class ValheimProfilerConfig
             "Max over 60 sec sort column",
             "ThirdMax",
             "Descending sort column restored when the MonoBehaviour Frame Profiler opens the Max over 60 sec view.");
+        MonoBehaviourProfilerIgnoreGcAllocations = config.Bind(
+            "MonoBehaviour Frame Profiler",
+            "Ignore gc allocations",
+            false,
+            "Discard an entire measured sample when the MonoBehaviour Frame Profiler GC heuristic detects a garbage collection during that sample. Discarded samples do not affect calls, averages, maxima, percentiles, sample counts, or GC sample counts.");
 
         MonoBehaviourCallIncludeValheimProfilerCallbacks = config.Bind(
             "MonoBehaviour Call Profiler",
@@ -270,8 +280,10 @@ internal sealed class ValheimProfilerConfig
     internal ConfigEntry<bool> MonoBehaviourIncludeValheimProfilerCallbacks { get; }
     internal ConfigEntry<string> PatchProfilerAvgSortColumn { get; }
     internal ConfigEntry<string> PatchProfilerMaxSortColumn { get; }
+    internal ConfigEntry<bool> PatchProfilerIgnoreGcAllocations { get; }
     internal ConfigEntry<string> MonoBehaviourProfilerAvgSortColumn { get; }
     internal ConfigEntry<string> MonoBehaviourProfilerMaxSortColumn { get; }
+    internal ConfigEntry<bool> MonoBehaviourProfilerIgnoreGcAllocations { get; }
     internal ConfigEntry<bool> MonoBehaviourCallIncludeValheimProfilerCallbacks { get; }
     internal ConfigEntry<string> MonoBehaviourCallProfilerSortColumn { get; }
     internal ConfigEntry<string> ValheimUpdateProfilerAvgSortColumn { get; }

@@ -277,6 +277,7 @@ internal sealed partial class PatchProfilerTool
         Label("Only samples >= 1 ms are checked to keep profiler overhead low.");
         Label("Such samples are not automatically fake: the profiled code may allocate enough to trigger GC.");
         Label("But if a row has high raw max and GC samples, interpret the raw max carefully.");
+        Label("Enable Ignore gc allocations to discard GC-associated samples before they enter any profiler statistics. Changing the option resets the current statistics.");
         GUILayout.Space(6f);
 
         GroupLabel("Frame budget");

@@ -79,6 +79,8 @@ public sealed class ValheimProfilerPlugin : BaseUnityPlugin
 
     private void OnGUI() => App?.OnGUI();
 
+    private void OnApplicationFocus(bool focused) => App?.OnApplicationFocus(focused);
+
     private void OnDisable()
     {
         App?.SetUiVisible(false);

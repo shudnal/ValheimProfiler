@@ -81,6 +81,7 @@ internal sealed partial class PatchProfilerTool : IProfilerTool
     private bool _modsSelectionDirty;
     private volatile bool _profilingActive;
     private bool _groupByMod = true;
+    private volatile bool _ignoreGcAllocations;
 
     private int _currentFrame;
     private int _currentRealtimeMs;
@@ -215,6 +216,7 @@ internal sealed partial class PatchProfilerTool : IProfilerTool
             config.PatchProfilerMaxSortColumn.Value,
             ProfilerView.MaxOver60Sec,
             TableSortColumn.ThirdMax);
+        _ignoreGcAllocations = config.PatchProfilerIgnoreGcAllocations.Value;
 
         var patchMinimumSize = new Vector2(720f, 360f);
         var detailsMinimumSize = new Vector2(520f, 280f);

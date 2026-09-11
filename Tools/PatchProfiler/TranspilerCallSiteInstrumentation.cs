@@ -460,6 +460,9 @@ internal sealed partial class PatchProfilerTool
                     GC.CollectionCount(2) != instance._lastObservedGc2;
             }
 
+            if (gcSample && instance._ignoreGcAllocations)
+                return;
+
             int frame = Time.frameCount;
             float now = Time.realtimeSinceStartup;
             instance.SetCurrentRealtime(now);

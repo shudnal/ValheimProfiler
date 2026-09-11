@@ -71,6 +71,20 @@ internal sealed partial class PatchProfilerTool
                     _groupByMod = newGroupByMod;
                     MarkViewDirty();
                 }
+
+                GUILayout.Space(6f);
+
+                bool newIgnoreGcAllocations = ProfilerGui.ToggleLayout(
+                    _theme,
+                    _ignoreGcAllocations,
+                    new GUIContent(
+                        "Ignore gc allocations",
+                        "Discard GC-associated samples before they enter profiler statistics.\nDiscarded samples do not affect calls, averages, maxima, percentiles, sample counts, or GC sample counts.\nChanging this option resets the current statistics."),
+                    165f,
+                    _labelStyle);
+
+                if (newIgnoreGcAllocations != _ignoreGcAllocations)
+                    SetIgnoreGcAllocations(newIgnoreGcAllocations);
             }
 
             GUILayout.EndHorizontal();
@@ -333,22 +347,39 @@ internal sealed partial class PatchProfilerTool
         }
 
         if (GUILayout.Button("Reset stats", GUILayout.Width(100f)))
-        {
-            lock (_lock)
-            {
-                foreach (PatchStat stat in _stats.Values)
-                    stat.Reset();
-            }
-
-            ClearAnalyticsQueues();
-            _statsFrozen = false;
-            MarkViewDirty();
-        }
+            ResetAllStats();
 
         if (GUILayout.Button("Close", GUILayout.Width(70f)))
             IsWindowVisible = false;
 
         GUILayout.EndHorizontal();
+    }
+
+
+    private void SetIgnoreGcAllocations(bool value)
+    {
+        if (_ignoreGcAllocations == value)
+            return;
+
+        _ignoreGcAllocations = value;
+        _app.Config.PatchProfilerIgnoreGcAllocations.Value = value;
+        ResetAllStats();
+        _status = value
+            ? "GC-associated samples are ignored. Statistics reset."
+            : "GC-associated samples are included. Statistics reset.";
+    }
+
+    private void ResetAllStats()
+    {
+        lock (_lock)
+        {
+            foreach (PatchStat stat in _stats.Values)
+                stat.Reset();
+        }
+
+        ClearAnalyticsQueues();
+        _statsFrozen = false;
+        MarkViewDirty();
     }
 
 }

@@ -199,11 +199,12 @@ internal sealed class WindowManager
     private void DrawWindow(ProfilerWindow window, int id)
     {
         _theme.EnsureStyles();
-        GUI.tooltip = string.Empty;
 
+        // Never carry a tooltip from another profiler window or a previous IMGUI pass.
+        // With input collection left intact, Event.current.mousePosition remains the native
+        // Valheim/Unity value and no synthetic mouse-position rewrite is needed.
+        GUI.tooltip = string.Empty;
         Event current = Event.current;
-        Vector2 originalMousePosition = current.mousePosition;
-        bool syntheticMousePosition = TryApplyRealtimeMousePosition(window, current);
 
         try
         {
@@ -223,53 +224,36 @@ internal sealed class WindowManager
             DrawWindowBorder(window);
             DrawResizeHandle(window);
 
-            // Tool windows keep the proven VCM behaviour and clip tooltips to their owner.
-            // The compact launcher is different: its tooltips are captured here and drawn
-            // after all GUI.Window calls so they can extend beyond the launcher's bounds.
+            Rect localArea = new(0f, 0f, window.Rect.width, window.Rect.height);
+
+            // Tool windows clip tooltips to their owner. The compact launcher captures its
+            // tooltip and draws it after all GUI.Window calls so it can extend outside the
+            // launcher's small bounds. Tooltip drawing itself is Repaint-only.
             if (window.AllowTooltipOverflow)
             {
-                string tooltip = GUI.tooltip;
-                if (!string.IsNullOrEmpty(tooltip))
+                if (current != null && current.type == EventType.Repaint &&
+                    Application.isFocused && localArea.Contains(current.mousePosition))
                 {
-                    _overflowTooltip = tooltip;
-                    _overflowTooltipPointer = window.Rect.position + current.mousePosition;
+                    string tooltip = GUI.tooltip;
+                    if (!string.IsNullOrEmpty(tooltip))
+                    {
+                        _overflowTooltip = tooltip;
+                        _overflowTooltipPointer = window.Rect.position + current.mousePosition;
+                    }
                 }
             }
             else
             {
-                _tooltips.Draw(new Rect(0f, 0f, window.Rect.width, window.Rect.height));
+                _tooltips.Draw(localArea);
             }
 
             GUI.DragWindow(new Rect(0f, 0f, Mathf.Max(0f, window.Rect.width - 4f), TitleBarHeight));
         }
         finally
         {
-            if (syntheticMousePosition)
-                current.mousePosition = originalMousePosition;
+            GUI.tooltip = string.Empty;
         }
     }
-
-    private bool TryApplyRealtimeMousePosition(ProfilerWindow window, Event current)
-    {
-        if (window == null || current == null)
-            return false;
-
-        // Valheim's mouse blocking paths can leave IMGUI repaint/layout events with
-        // a stale (0, 0) mouse position while real mouse coordinates are still
-        // available through UnityInput. GUI.tooltip is evaluated during those events,
-        // so feed IMGUI the current logical mouse position for hover-only work.
-        if (current.type != EventType.Repaint && current.type != EventType.Layout)
-            return false;
-
-        Vector2 localMouse = _scale.GetLogicalMousePosition() - window.Rect.position;
-        if (!IsFinite(localMouse.x) || !IsFinite(localMouse.y))
-            return false;
-
-        current.mousePosition = localMouse;
-        return true;
-    }
-
-    private static bool IsFinite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
 
     private void HandleResizeInput(ProfilerWindow window)
     {

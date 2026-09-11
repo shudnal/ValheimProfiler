@@ -1,32 +1,42 @@
 #nullable disable
 
 using HarmonyLib;
+using System.Collections.Generic;
+using System.Reflection;
 using UnityEngine;
 
 namespace ValheimProfiler.Valheim;
 
-// FejdStartup owns the native cursor defaults on the main-menu side of a
-// world transition. If a profiler window stays open during connect/disconnect,
-// the actual cursor must remain unlocked, but the state restored when the UI is
-// later hidden has to follow the destination scene.
-[HarmonyPatch(typeof(FejdStartup), "Start")]
-internal static class FejdStartupStartCursorPatch
+/// <summary>
+/// While profiler IMGUI windows are visible, keep Valheim's native cursor owners from
+/// recapturing/hiding the cursor. When the profiler closes, those methods run normally and
+/// ValheimCursorController asks the active scene to recompute its current cursor state.
+/// </summary>
+[HarmonyPatch]
+internal static class NativeCursorWindowOverridePatch
 {
-    private static void Postfix()
+    private static IEnumerable<MethodBase> TargetMethods()
     {
-        ValheimProfilerPlugin.Instance?.App?.OverrideCursorReleaseState(
-            CursorLockMode.None,
-            visible: true);
-    }
-}
+        MethodInfo gameCamera = AccessTools.DeclaredMethod(typeof(GameCamera), nameof(GameCamera.UpdateMouseCapture));
+        MethodInfo menu = AccessTools.DeclaredMethod(typeof(Menu), nameof(Menu.UpdateCursor));
+        MethodInfo fejd = AccessTools.DeclaredMethod(typeof(FejdStartup), nameof(FejdStartup.UpdateCursor));
 
-[HarmonyPatch(typeof(FejdStartup), "OnDestroy")]
-internal static class FejdStartupOnDestroyCursorPatch
-{
-    private static void Prefix()
+        if (gameCamera != null)
+            yield return gameCamera;
+        if (menu != null)
+            yield return menu;
+        if (fejd != null)
+            yield return fejd;
+    }
+
+    [HarmonyPriority(Priority.First)]
+    private static bool Prefix()
     {
-        ValheimProfilerPlugin.Instance?.App?.OverrideCursorReleaseState(
-            CursorLockMode.Locked,
-            visible: false);
+        ValheimProfilerApp app = ValheimProfilerPlugin.Instance?.App;
+        if (app?.HasVisibleWindows != true || !Application.isFocused)
+            return true;
+
+        app.ApplyCursorOverride();
+        return false;
     }
 }

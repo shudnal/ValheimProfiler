@@ -88,6 +88,7 @@ internal sealed partial class MonoBehaviourProfilerTool : IProfilerTool
     private bool _listReady;
     private volatile bool _profilingActive;
     private bool _groupByMod = true;
+    private volatile bool _ignoreGcAllocations;
     private bool _viewDirty = true;
     private bool _statsFrozen;
 
@@ -145,6 +146,7 @@ internal sealed partial class MonoBehaviourProfilerTool : IProfilerTool
             config.MonoBehaviourProfilerMaxSortColumn.Value,
             ProfilerView.MaxOver60Sec,
             TableSortColumn.ThirdMax);
+        _ignoreGcAllocations = config.MonoBehaviourProfilerIgnoreGcAllocations.Value;
 
         var minimumSize = new Vector2(760f, 420f);
         Vector2 defaultSize = _windows.GetDefaultToolWindowSize(650f, minimumSize);

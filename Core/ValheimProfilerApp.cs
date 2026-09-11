@@ -43,8 +43,6 @@ internal sealed class ValheimProfilerApp
     internal bool UiVisible => _uiVisible;
     internal bool IsDrawingUi { get; private set; }
     internal bool HasVisibleWindows => _uiVisible && _windows.HasRequestedVisibleWindows;
-    internal bool ShouldBlockGameInput => HasVisibleWindows && _config.BlockGameInput.Value;
-    internal bool ShouldBlockMouseInput => HasVisibleWindows && (_config.BlockGameInput.Value || _config.BlockMouseInput.Value);
     internal ValheimProfilerConfig Config => _config;
     internal GuiScaleController Scale => _scale;
     internal ThemeManager Theme => _theme;
@@ -105,6 +103,7 @@ internal sealed class ValheimProfilerApp
 
         HandleToolHotkey(_config.NetworkProfilerHotkey.Value.IsDown(), _networkProfiler);
 
+        ValheimInputState.Synchronize();
         _tools.Update();
         _windows.UpdatePersistence();
         _cursor.Update(HasVisibleWindows);
@@ -152,6 +151,7 @@ internal sealed class ValheimProfilerApp
             return;
 
         _uiVisible = visible;
+        ValheimInputState.Synchronize();
         _cursor.Update(HasVisibleWindows);
         _pause.Update(HasVisibleWindows);
     }
@@ -162,16 +162,15 @@ internal sealed class ValheimProfilerApp
         _pause.Release();
     }
 
-    internal void OverrideCursorReleaseState(CursorLockMode lockState, bool visible)
-    {
-        if (!HasVisibleWindows)
-            return;
+    internal void ApplyCursorOverride() => _cursor.ApplyWindowCursor();
 
-        _cursor.OverrideReleaseState(lockState, visible);
-    }
+    internal void OnApplicationFocus(bool focused) => _cursor.OnApplicationFocus(focused, HasVisibleWindows);
 
     internal void Shutdown()
     {
+        if (_uiVisible)
+            SetUiVisible(false);
+
         _tools.Shutdown();
         _patchProfiler = null;
         _monoBehaviourProfiler = null;
@@ -183,6 +182,7 @@ internal sealed class ValheimProfilerApp
 
         _windows.SaveAll();
         _windows.Shutdown();
+        ValheimInputState.Reset();
         ReleaseCursorAndPause();
         _theme.Shutdown();
     }
@@ -272,7 +272,7 @@ internal sealed class ValheimProfilerApp
             _config.BlockMouseInput.Value,
             new GUIContent(
                 "Prevent mouse",
-                "Block gameplay mouse clicks, wheel and camera movement while keeping keyboard movement, inventory and other hotkeys active. Prevent input overrides this setting."),
+                "Block Valheim mouse-driven gameplay and background UI interactions while keeping keyboard/controller input available. Prevent input overrides this setting."),
             preventMouseWidth,
             GUI.skin.label,
             1f);

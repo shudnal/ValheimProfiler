@@ -74,6 +74,21 @@ internal sealed partial class MonoBehaviourProfilerTool
                     _groupByMod = newGroup;
                     MarkViewDirty();
                 }
+
+                GUILayout.Space(6f);
+
+                bool newIgnoreGcAllocations = ProfilerGui.ToggleLayout(
+                    _theme,
+                    _ignoreGcAllocations,
+                    new GUIContent(
+                        "Ignore gc allocations",
+                        "Discard GC-associated samples before they enter profiler statistics.\nDiscarded samples do not affect calls, averages, maxima, percentiles, sample counts, or GC sample counts.\nChanging this option resets the current statistics."),
+                    165f,
+                    _labelStyle,
+                    0f);
+
+                if (newIgnoreGcAllocations != _ignoreGcAllocations)
+                    SetIgnoreGcAllocations(newIgnoreGcAllocations);
             }
 
             GUILayout.EndHorizontal();
@@ -129,6 +144,18 @@ internal sealed partial class MonoBehaviourProfilerTool
         GUILayout.EndHorizontal();
     }
 
+    private void SetIgnoreGcAllocations(bool value)
+    {
+        if (_ignoreGcAllocations == value)
+            return;
+
+        _ignoreGcAllocations = value;
+        _app.Config.MonoBehaviourProfilerIgnoreGcAllocations.Value = value;
+        ResetAllStats();
+        _status = value
+            ? "GC-associated samples are ignored. Statistics reset."
+            : "GC-associated samples are included. Statistics reset.";
+    }
 
     private void DrawProfilerTab()
     {
@@ -205,6 +232,7 @@ internal sealed partial class MonoBehaviourProfilerTool
         HeaderLabel("Max over 60 sec");
         Label("raw max, 2nd max and 3rd max are the three slowest callback invocations in the rolling 60-second window.");
         Label("p95 and p99 are approximate histogram percentiles. GC samples mark slow calls observed in a frame where a GC collection counter changed.");
+        Label("Enable Ignore gc allocations to discard GC-associated samples before they enter any profiler statistics. Changing the option resets the current statistics.");
         Label("A trailing ! marks an isolated high spike or a high GC-associated sample.");
         Label("Click a table column header to sort descending by that column. The active sort column is highlighted.");
         GUILayout.Space(6f);

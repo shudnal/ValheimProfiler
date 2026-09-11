@@ -11,10 +11,108 @@ using UnityEngine.UI;
 
 namespace ValheimProfiler.Valheim;
 
+internal enum ValheimInputBlockMode
+{
+    Off,
+    Mouse,
+    All
+}
+
 internal static class ValheimInputState
 {
-    internal static bool ShouldBlockAll => ValheimProfilerPlugin.Instance?.App?.ShouldBlockGameInput == true;
-    internal static bool ShouldBlockMouse => ValheimProfilerPlugin.Instance?.App?.ShouldBlockMouseInput == true;
+    private static int _releaseUntilFrame = -1;
+    private static ValheimInputBlockMode _releasedMode;
+    private static ValheimInputBlockMode _lastLiveMode;
+    private static readonly List<Vector2> NoTouchPoints = new();
+
+    internal static bool ShouldBlockAll => CurrentMode == ValheimInputBlockMode.All;
+    internal static bool ShouldBlockMouse => CurrentMode != ValheimInputBlockMode.Off;
+    internal static List<Vector2> EmptyTouchPoints
+    {
+        get
+        {
+            NoTouchPoints.Clear();
+            return NoTouchPoints;
+        }
+    }
+
+    private static ValheimInputBlockMode CurrentMode
+    {
+        get
+        {
+            ValheimProfilerApp app = ValheimProfilerPlugin.Instance?.App;
+            if (app?.HasVisibleWindows == true)
+                return ResolveLiveMode(app);
+
+            return Time.frameCount <= _releaseUntilFrame
+                ? _releasedMode
+                : ValheimInputBlockMode.Off;
+        }
+    }
+
+    internal static void Synchronize()
+    {
+        ValheimProfilerApp app = ValheimProfilerPlugin.Instance?.App;
+        ValheimInputBlockMode liveMode = app?.HasVisibleWindows == true
+            ? ResolveLiveMode(app)
+            : ValheimInputBlockMode.Off;
+
+        if (liveMode == _lastLiveMode)
+            return;
+
+        ValheimInputBlockMode previous = _lastLiveMode;
+        _lastLiveMode = liveMode;
+
+        if (liveMode != ValheimInputBlockMode.Off)
+        {
+            _releaseUntilFrame = -1;
+            _releasedMode = ValheimInputBlockMode.Off;
+            CancelInventoryDrag();
+            ResetGameButtonStates();
+            return;
+        }
+
+        if (previous != ValheimInputBlockMode.Off)
+        {
+            // Do not let the click/key that closed the profiler leak into a later Update or
+            // the next FixedUpdate. Keep the previous blocking mode for one frame boundary.
+            _releasedMode = previous;
+            _releaseUntilFrame = Time.frameCount + 1;
+            ResetGameButtonStates();
+            if (previous == ValheimInputBlockMode.All)
+                PlayerController.SetTakeInputDelay(Mathf.Max(PlayerController.takeInputDelay, 0.1f));
+        }
+    }
+
+    internal static void Reset()
+    {
+        _releaseUntilFrame = -1;
+        _releasedMode = ValheimInputBlockMode.Off;
+        _lastLiveMode = ValheimInputBlockMode.Off;
+    }
+
+    private static ValheimInputBlockMode ResolveLiveMode(ValheimProfilerApp app)
+    {
+        if (app == null)
+            return ValheimInputBlockMode.Off;
+        if (app.Config.BlockGameInput.Value)
+            return ValheimInputBlockMode.All;
+        if (app.Config.BlockMouseInput.Value)
+            return ValheimInputBlockMode.Mouse;
+        return ValheimInputBlockMode.Off;
+    }
+
+    private static void CancelInventoryDrag()
+    {
+        if (InventoryGui.instance)
+            InventoryGui.instance.SetupDragItem(null, null, 0);
+    }
+
+    private static void ResetGameButtonStates()
+    {
+        if (ZInput.instance != null)
+            ZInput.ResetAllButtonStates();
+    }
 }
 
 internal static class ZInputPatchMethods
@@ -519,12 +617,14 @@ internal static class ZInputMouseBindingCachePatch
     }
 }
 
-[HarmonyPatch(typeof(PlayerController), nameof(PlayerController.TakeInput))]
+[HarmonyPatch(typeof(PlayerController), nameof(PlayerController.TakeInput), new[] { typeof(bool) })]
 [HarmonyPriority(Priority.Last)]
 internal static class PlayerControllerTakeInputPatch
 {
     private static void Postfix(ref bool __result)
     {
+        // Keep native FixedUpdate/LateUpdate running so Valheim executes its own zero-controls
+        // and zero-look paths instead of skipping controller simulation entirely.
         if (ValheimInputState.ShouldBlockAll)
             __result = false;
     }
@@ -541,26 +641,174 @@ internal static class TextInputIsVisiblePatch
     }
 }
 
+internal static class ValheimInputPatchUtilities
+{
+    internal static MethodInfo InputMethod(Type type, string name) => AccessTools.DeclaredMethod(type, name);
+
+    internal static MethodInfo AnalogInputMethod(Type valueType)
+    {
+        MethodInfo generic = InputMethod(typeof(ZInput), nameof(ZInput.ReadValueDef));
+        return generic?.MakeGenericMethod(valueType);
+    }
+
+    internal static MethodInfo OptionalMethod(string typeName, string methodName)
+    {
+        Type type = AccessTools.TypeByName(typeName);
+        return type == null ? null : AccessTools.Method(type, methodName);
+    }
+}
+
 [HarmonyPatch]
-internal static class ValheimMouseInteractionBlockPatch
+internal static class ZInputAllBooleanQueriesPatch
 {
     private static IEnumerable<MethodBase> TargetMethods()
     {
-        return new[]
+        MethodInfo[] methods =
+        {
+            ValheimInputPatchUtilities.InputMethod(typeof(ZInput), nameof(ZInput.TryGetButtonState)),
+            ValheimInputPatchUtilities.InputMethod(typeof(ZInput), nameof(ZInput.TryGetKeyStateLowLevel)),
+            ValheimInputPatchUtilities.InputMethod(typeof(ZInput), nameof(ZInput.GetRadialTap)),
+            ValheimInputPatchUtilities.InputMethod(typeof(ZInput), nameof(ZInput.GetRadialMultiTap)),
+            ValheimInputPatchUtilities.InputMethod(typeof(ZInput), nameof(ZInput.HasDoubleTapped))
+        };
+
+        return methods.Where(method => method != null).Cast<MethodBase>();
+    }
+
+    [HarmonyPriority(Priority.First)]
+    private static bool Prefix(ref bool __result)
+    {
+        // Deliberately do not patch ShouldAcceptInputFromSource. Valheim uses it while processing
+        // action cancellation and device switching; blocking it can leave held controls stuck and
+        // can starve mouse/cursor state that IMGUI tooltips rely on.
+        if (!ValheimInputState.ShouldBlockAll)
+            return true;
+
+        __result = false;
+        return false;
+    }
+}
+
+[HarmonyPatch]
+internal static class ZInputAllFloatQueriesPatch
+{
+    private static IEnumerable<MethodBase> TargetMethods()
+    {
+        MethodInfo[] methods =
+        {
+            ValheimInputPatchUtilities.AnalogInputMethod(typeof(float)),
+            ValheimInputPatchUtilities.InputMethod(typeof(ZInput), nameof(ZInput.GetButtonPressedTimer)),
+            ValheimInputPatchUtilities.InputMethod(typeof(ZInput), nameof(ZInput.GetButtonLastPressedTimer)),
+            ValheimInputPatchUtilities.InputMethod(typeof(ZInput), nameof(ZInput.GetLongPressProgress))
+        };
+
+        return methods.Where(method => method != null).Cast<MethodBase>();
+    }
+
+    [HarmonyPriority(Priority.Last)]
+    private static void Postfix(ref float __result)
+    {
+        if (ValheimInputState.ShouldBlockAll)
+            __result = 0f;
+    }
+}
+
+[HarmonyPatch]
+internal static class ZInputAllVectorQueriesPatch
+{
+    private static IEnumerable<MethodBase> TargetMethods()
+    {
+        MethodInfo[] methods =
+        {
+            ValheimInputPatchUtilities.AnalogInputMethod(typeof(Vector2)),
+            ValheimInputPatchUtilities.InputMethod(typeof(ZInput), nameof(ZInput.GetGyro))
+        };
+
+        return methods.Where(method => method != null).Cast<MethodBase>();
+    }
+
+    [HarmonyPriority(Priority.Last)]
+    private static void Postfix(ref Vector2 __result)
+    {
+        if (ValheimInputState.ShouldBlockAll)
+            __result = Vector2.zero;
+    }
+}
+
+[HarmonyPatch(typeof(ZInput), nameof(ZInput.GetTouchPinchPoints))]
+internal static class ZInputTouchPinchBlockPatch
+{
+    [HarmonyPriority(Priority.Last)]
+    private static void Postfix(ref List<Vector2> __result)
+    {
+        if (ValheimInputState.ShouldBlockAll)
+            __result = ValheimInputState.EmptyTouchPoints;
+    }
+}
+
+[HarmonyPatch]
+internal static class ValheimPointerInteractionBlockPatch
+{
+    private static IEnumerable<MethodBase> TargetMethods()
+    {
+        MethodInfo[] methods =
         {
             AccessTools.Method(typeof(InventoryGrid), nameof(InventoryGrid.OnLeftClick)),
             AccessTools.Method(typeof(InventoryGrid), nameof(InventoryGrid.OnLeftDown)),
             AccessTools.Method(typeof(InventoryGrid), nameof(InventoryGrid.OnRightDown)),
+            AccessTools.Method(typeof(InventoryGrid), nameof(InventoryGrid.OnBeginDrag)),
+            AccessTools.Method(typeof(InventoryGrid), nameof(InventoryGrid.OnReleasedOn)),
+            AccessTools.Method(typeof(InventoryGrid), nameof(InventoryGrid.OnDragEnd)),
             AccessTools.Method(typeof(InventoryGui), nameof(InventoryGui.OnSelectedItem)),
+            AccessTools.Method(typeof(InventoryGui), nameof(InventoryGui.OnReleasedItem)),
             AccessTools.Method(typeof(InventoryGui), nameof(InventoryGui.OnRightClickItem)),
-            AccessTools.Method(typeof(Toggle), nameof(Toggle.OnPointerClick)),
+            AccessTools.Method(typeof(UIInputHandler), nameof(UIInputHandler.OnPointerDown)),
+            AccessTools.Method(typeof(UIInputHandler), nameof(UIInputHandler.OnPointerClick)),
+            AccessTools.Method(typeof(UIDragHandler), nameof(UIDragHandler.OnBeginDrag)),
+            AccessTools.Method(typeof(UIDragHandler), nameof(UIDragHandler.OnDrag)),
+            AccessTools.Method(typeof(UIDragHandler), nameof(UIDragHandler.OnEndDrag)),
+            AccessTools.Method(typeof(UIDragHandler), nameof(UIDragHandler.OnReleasedOn)),
             AccessTools.Method(typeof(Button), nameof(Button.OnPointerClick)),
-            AccessTools.Method(typeof(ScrollRect), nameof(ScrollRect.OnScroll))
-        }.Where(method => method != null);
+            AccessTools.Method(typeof(Toggle), nameof(Toggle.OnPointerClick)),
+            AccessTools.Method(typeof(Selectable), nameof(Selectable.OnPointerDown)),
+            AccessTools.Method(typeof(Slider), nameof(Slider.OnPointerDown)),
+            AccessTools.Method(typeof(Slider), nameof(Slider.OnDrag)),
+            AccessTools.Method(typeof(Scrollbar), nameof(Scrollbar.OnPointerDown)),
+            AccessTools.Method(typeof(Scrollbar), nameof(Scrollbar.OnDrag)),
+            AccessTools.Method(typeof(Scrollbar), nameof(Scrollbar.OnBeginDrag)),
+            AccessTools.Method(typeof(ScrollRect), nameof(ScrollRect.OnScroll)),
+            AccessTools.Method(typeof(ScrollRect), nameof(ScrollRect.OnBeginDrag)),
+            AccessTools.Method(typeof(ScrollRect), nameof(ScrollRect.OnDrag)),
+            AccessTools.Method(typeof(InputField), nameof(InputField.OnPointerClick)),
+            AccessTools.Method(typeof(Dropdown), nameof(Dropdown.OnPointerClick)),
+            ValheimInputPatchUtilities.OptionalMethod("TMPro.TMP_InputField", "OnPointerClick"),
+            ValheimInputPatchUtilities.OptionalMethod("TMPro.TMP_Dropdown", "OnPointerClick")
+        };
+
+        return methods.Where(method => method != null).Cast<MethodBase>().Distinct();
     }
 
     [HarmonyPriority(Priority.First)]
     private static bool Prefix() => !ValheimInputState.ShouldBlockMouse;
+}
+
+[HarmonyPatch(typeof(UIInputHandler), nameof(UIInputHandler.OnPointerUp))]
+internal static class UIInputHandlerPointerUpBlockPatch
+{
+    [HarmonyPriority(Priority.First)]
+    private static bool Prefix(UIInputHandler __instance)
+    {
+        if (!ValheimInputState.ShouldBlockMouse)
+            return true;
+
+        // Do not dispatch the background UI action, but release InventoryGrid's pressed-item
+        // state so opening the profiler during a click cannot leave the inventory stuck.
+        InventoryGrid grid = __instance.GetComponentInParent<InventoryGrid>();
+        if (grid)
+            grid.OnLeftRelease(__instance);
+
+        return false;
+    }
 }
 
 [HarmonyPatch]
@@ -568,45 +816,29 @@ internal static class ValheimAllInputInteractionBlockPatch
 {
     private static IEnumerable<MethodBase> TargetMethods()
     {
-        return new[]
+        MethodInfo[] methods =
         {
-            AccessTools.Method(typeof(Toggle), nameof(Toggle.OnSubmit)),
+            AccessTools.Method(typeof(InventoryGrid), nameof(InventoryGrid.EquipHovered)),
+            AccessTools.Method(typeof(Player), nameof(Player.UseHotbarItem)),
             AccessTools.Method(typeof(Button), nameof(Button.OnSubmit)),
             AccessTools.Method(typeof(Button), "Press"),
-            AccessTools.Method(typeof(Player), nameof(Player.UseHotbarItem))
-        }.Where(method => method != null);
+            AccessTools.Method(typeof(Toggle), nameof(Toggle.OnSubmit)),
+            AccessTools.Method(typeof(Selectable), nameof(Selectable.OnMove)),
+            AccessTools.Method(typeof(Slider), nameof(Slider.OnMove)),
+            AccessTools.Method(typeof(Scrollbar), nameof(Scrollbar.OnMove)),
+            AccessTools.Method(typeof(InputField), nameof(InputField.OnUpdateSelected)),
+            AccessTools.Method(typeof(InputField), nameof(InputField.OnSubmit)),
+            AccessTools.Method(typeof(Dropdown), nameof(Dropdown.OnSubmit)),
+            ValheimInputPatchUtilities.OptionalMethod("TMPro.TMP_InputField", "OnUpdateSelected"),
+            ValheimInputPatchUtilities.OptionalMethod("TMPro.TMP_InputField", "OnSubmit"),
+            ValheimInputPatchUtilities.OptionalMethod("TMPro.TMP_Dropdown", "OnSubmit")
+        };
+
+        return methods.Where(method => method != null).Cast<MethodBase>().Distinct();
     }
 
     [HarmonyPriority(Priority.First)]
     private static bool Prefix() => !ValheimInputState.ShouldBlockAll;
-}
-
-[HarmonyPatch]
-internal static class ZInputAllBooleanBlockPatch
-{
-    private static IEnumerable<MethodBase> TargetMethods()
-    {
-        return ZInputPatchMethods.FindBooleanMethods(
-            nameof(ZInput.ShouldAcceptInputFromSource),
-            nameof(ZInput.GetKey),
-            nameof(ZInput.GetKeyUp),
-            nameof(ZInput.GetKeyDown),
-            nameof(ZInput.GetButton),
-            nameof(ZInput.GetButtonDown),
-            nameof(ZInput.GetButtonUp),
-            nameof(ZInput.GetRadialTap),
-            nameof(ZInput.GetRadialMultiTap));
-    }
-
-    [HarmonyPriority(Priority.First)]
-    private static bool Prefix(ref bool __result)
-    {
-        if (!ValheimInputState.ShouldBlockAll)
-            return true;
-
-        __result = false;
-        return false;
-    }
 }
 
 [HarmonyPatch]
@@ -736,30 +968,6 @@ internal static class ZInputMouseBooleanBlockPatch
 
         __result = false;
         return false;
-    }
-}
-
-[HarmonyPatch]
-internal static class ZInputAllFloatBlockPatch
-{
-    private static IEnumerable<MethodBase> TargetMethods()
-    {
-        return new[]
-        {
-            AccessTools.Method(typeof(ZInput), nameof(ZInput.GetJoyLeftStickX)),
-            AccessTools.Method(typeof(ZInput), nameof(ZInput.GetJoyLeftStickY)),
-            AccessTools.Method(typeof(ZInput), nameof(ZInput.GetJoyRTrigger)),
-            AccessTools.Method(typeof(ZInput), nameof(ZInput.GetJoyLTrigger)),
-            AccessTools.Method(typeof(ZInput), nameof(ZInput.GetJoyRightStickX)),
-            AccessTools.Method(typeof(ZInput), nameof(ZInput.GetJoyRightStickY))
-        }.Where(method => method != null);
-    }
-
-    [HarmonyPriority(Priority.Last)]
-    private static void Postfix(ref float __result)
-    {
-        if (ValheimInputState.ShouldBlockAll)
-            __result = 0f;
     }
 }
 
