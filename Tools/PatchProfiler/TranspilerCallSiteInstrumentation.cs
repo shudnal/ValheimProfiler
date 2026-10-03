@@ -3,6 +3,7 @@
 using HarmonyLib;
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
@@ -28,6 +29,19 @@ internal sealed partial class PatchProfilerTool
         public long StartTicks;
     }
 
+    private sealed class ActiveTranspilerCallGroup
+    {
+        public readonly List<PatchStat> Stats = new List<PatchStat>(2);
+        public long MeasurementSequence;
+        public int MeasurementIndex = -1;
+        public long StartTicks;
+        public long InclusiveTicks;
+        public long ChildTicks;
+        public long ProfilerPrefixStartTicks;
+        public long ProfilerFinalizerStartTicks;
+        public bool Completed;
+    }
+
     private Dictionary<MethodBase, RuntimeTranspilerCallPlan[]> _runtimeTranspilerCallPlans =
         new Dictionary<MethodBase, RuntimeTranspilerCallPlan[]>(0);
 
@@ -41,7 +55,41 @@ internal sealed partial class PatchProfilerTool
     private static int _nextTranspilerCallWrapperId;
 
     [ThreadStatic]
+    private static MethodBase _callSiteInstallationTarget;
+    private readonly ConcurrentQueue<CallSiteRebuildFailure> _callSiteRebuildFailures = new ConcurrentQueue<CallSiteRebuildFailure>();
+
+    private sealed class CallSiteRebuildFailure
+    {
+        internal MethodBase Method;
+        internal Exception Exception;
+    }
+
+    private bool ProcessCallSiteRebuildFailures()
+    {
+        if (_callSiteRebuildFailures.IsEmpty)
+            return false;
+        using var log = _instrumentationLog.BeginOperation("Reapplication");
+        int failures = 0;
+        while (_callSiteRebuildFailures.TryDequeue(out CallSiteRebuildFailure failure))
+        {
+            failures++;
+            _safetyReport.Failure(failure.Method, "Call-site rebuild failed", failure.Exception);
+            _app.InstrumentationSafety.Quarantine(failure.Method, InstrumentationLog.ExceptionSummary(failure.Exception));
+            log.MethodFailure(failure.Method, "Call-site rebuild failed; untouched source returned; measurements stopped", failure.Exception);
+        }
+        log.Summary("Deferred call-site rebuild failures: " + failures + ". Measurements stopped.", hasFailures: true);
+        BeginStopProfiling(freezeData: true, restartAfterRemoval: false);
+        _status = "Call-site rebuild failed. Removing instrumentation; see Skipped methods.";
+        MarkViewDirty();
+        return true;
+    }
+
+
+    [ThreadStatic]
     private static List<ActiveTranspilerCallTiming> _activeTranspilerCallTimings;
+
+    [ThreadStatic]
+    private static List<ActiveTranspilerCallGroup> _activeTranspilerCallGroups;
 
     private static bool IsCallSiteTimingSafe(MethodBase calledMethod)
     {
@@ -77,14 +125,16 @@ internal sealed partial class PatchProfilerTool
 
         try
         {
-            return InjectCallSiteTiming(source, plans, instance);
+            // Work on a separate list so an exception cannot return a partially rewritten source.
+            return InjectCallSiteTiming(new List<CodeInstruction>(source), plans, instance);
         }
         catch (Exception ex)
         {
-            instance._logger.LogDebug(
-                $"Could not inject exact transpiler-call timing into {GetMethodDisplay(__originalMethod)}: " +
-                $"{ex.GetType().Name}: {ex.Message}");
-            return source;
+            if (Equals(_callSiteInstallationTarget, __originalMethod))
+                throw; // The tracked install owns the rollback and method-level error report.
+            instance._callSiteRebuildFailures.Enqueue(new CallSiteRebuildFailure { Method = __originalMethod, Exception = ex });
+            return source; // Do not break a foreign Harmony rebuild because profiling failed. No partial edits escape.
+
         }
     }
 
@@ -217,10 +267,8 @@ internal sealed partial class PatchProfilerTool
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(
-                    $"Could not create transpiler-call wrapper for {GetMethodDisplay(calledMethod)}: " +
-                    $"{ex.GetType().Name}: {ex.Message}");
-                return null;
+                throw new InvalidOperationException("Could not create the transpiler-call timing wrapper for " +
+                    GetMethodDisplay(calledMethod) + ".", ex);
             }
         }
     }
@@ -271,6 +319,8 @@ internal sealed partial class PatchProfilerTool
         for (int i = 0; i < entryIds.Count; i++)
         {
             EmitLoadInt32(il, entryIds[i]);
+            EmitLoadInt32(il, i == 0 ? 1 : 0);
+            EmitLoadInt32(il, i == entryIds.Count - 1 ? 1 : 0);
             il.Emit(OpCodes.Call, beginMethod);
         }
 
@@ -294,6 +344,8 @@ internal sealed partial class PatchProfilerTool
         for (int i = entryIds.Count - 1; i >= 0; i--)
         {
             EmitLoadInt32(il, entryIds[i]);
+            EmitLoadInt32(il, i == 0 ? 1 : 0);
+            EmitLoadInt32(il, i == entryIds.Count - 1 ? 1 : 0);
             il.Emit(OpCodes.Call, endMethod);
         }
         il.EndExceptionBlock();
@@ -392,7 +444,7 @@ internal sealed partial class PatchProfilerTool
         opcode == OpCodes.Unaligned ||
         opcode == OpCodes.Volatile;
 
-    private static void BeginInjectedTranspilerCall(int entryId)
+    private static void BeginInjectedTranspilerCall(int entryId, bool groupOwner, bool startPhysicalMeasurement)
     {
         try
         {
@@ -400,94 +452,210 @@ internal sealed partial class PatchProfilerTool
                 return;
 
             PatchProfilerTool instance = _instance;
-            if (instance == null || !instance._profilingActive)
+            long profilerOverheadStartTicks = instance != null && instance._excludeMeasuredNestedCalls && groupOwner
+                ? BeginPatchProfilerOverhead(instance)
+                : 0L;
+            if (instance == null || !instance._profilingActive || instance._app.InstrumentationSafety.RestartRequired)
                 return;
 
             Dictionary<int, PatchStat> stats = instance._runtimeTranspilerCallStats;
             if (stats == null || !stats.TryGetValue(entryId, out PatchStat stat) || stat == null)
                 return;
 
-            _activeTranspilerCallTimings ??= new List<ActiveTranspilerCallTiming>(8);
-            _activeTranspilerCallTimings.Add(new ActiveTranspilerCallTiming
+            if (!instance._excludeMeasuredNestedCalls)
             {
-                EntryId = entryId,
-                Stat = stat,
-                StartTicks = Stopwatch.GetTimestamp()
-            });
+                _activeTranspilerCallTimings ??= new List<ActiveTranspilerCallTiming>(8);
+                _activeTranspilerCallTimings.Add(new ActiveTranspilerCallTiming
+                {
+                    EntryId = entryId,
+                    Stat = stat,
+                    StartTicks = Stopwatch.GetTimestamp()
+                });
+                return;
+            }
+
+            _activeTranspilerCallGroups ??= new List<ActiveTranspilerCallGroup>(4);
+            if (groupOwner)
+                _activeTranspilerCallGroups.Add(new ActiveTranspilerCallGroup
+                {
+                    ProfilerPrefixStartTicks = profilerOverheadStartTicks
+                });
+            if (_activeTranspilerCallGroups.Count == 0)
+                return;
+
+            ActiveTranspilerCallGroup group = _activeTranspilerCallGroups[_activeTranspilerCallGroups.Count - 1];
+            group.Stats.Add(stat);
+            if (startPhysicalMeasurement)
+            {
+                BeginPatchMeasurement(group.ProfilerPrefixStartTicks, out group.MeasurementSequence, out group.MeasurementIndex, out group.StartTicks);
+            }
         }
         catch
         {
         }
     }
 
-    private static void EndInjectedTranspilerCall(int entryId)
+    private static void EndInjectedTranspilerCall(int entryId, bool groupOwner, bool finishPhysicalMeasurement)
     {
         try
         {
             if (Thread.CurrentThread.ManagedThreadId != _mainThreadId)
                 return;
 
-            List<ActiveTranspilerCallTiming> stack = _activeTranspilerCallTimings;
-            if (stack == null || stack.Count == 0)
-                return;
-
-            int timingIndex = stack.Count - 1;
-            while (timingIndex >= 0 && stack[timingIndex].EntryId != entryId)
-                timingIndex--;
-
-            if (timingIndex < 0)
-                return;
-
-            ActiveTranspilerCallTiming timing = stack[timingIndex];
-            stack.RemoveAt(timingIndex);
-
             PatchProfilerTool instance = _instance;
-            if (instance == null || !instance._profilingActive || timing.Stat == null || timing.StartTicks <= 0)
+            bool excludeNested = instance != null && instance._excludeMeasuredNestedCalls;
+            long physicalEndTicks = excludeNested && finishPhysicalMeasurement ? Stopwatch.GetTimestamp() : 0L;
+            if (instance == null || !instance._profilingActive || instance._app.InstrumentationSafety.RestartRequired)
                 return;
 
-            long elapsedTicks = Stopwatch.GetTimestamp() - timing.StartTicks;
-            if (elapsedTicks < 0)
-                return;
-
-            double elapsedMs = elapsedTicks * MsPerTick;
-            bool gcSample = false;
-
-            if (elapsedMs >= GcCheckMinSampleMs)
+            if (!excludeNested)
             {
-                gcSample =
-                    GC.CollectionCount(0) != instance._lastObservedGc0 ||
-                    GC.CollectionCount(1) != instance._lastObservedGc1 ||
-                    GC.CollectionCount(2) != instance._lastObservedGc2;
+                List<ActiveTranspilerCallTiming> stack = _activeTranspilerCallTimings;
+                if (stack == null || stack.Count == 0)
+                    return;
+
+                int timingIndex = stack.Count - 1;
+                while (timingIndex >= 0 && stack[timingIndex].EntryId != entryId)
+                    timingIndex--;
+
+                if (timingIndex < 0)
+                    return;
+
+                ActiveTranspilerCallTiming timing = stack[timingIndex];
+                stack.RemoveAt(timingIndex);
+                if (timing.Stat == null || timing.StartTicks <= 0)
+                    return;
+
+                long elapsedTicks = Stopwatch.GetTimestamp() - timing.StartTicks;
+                if (elapsedTicks < 0)
+                    return;
+
+                RecordInjectedTranspilerCallSample(instance, timing.Stat, elapsedTicks, elapsedTicks);
+                return;
             }
 
-            if (gcSample && instance._ignoreGcAllocations)
+            List<ActiveTranspilerCallGroup> groups = _activeTranspilerCallGroups;
+            if (groups == null || groups.Count == 0)
                 return;
 
-            int frame = Time.frameCount;
-            float now = Time.realtimeSinceStartup;
-            instance.SetCurrentRealtime(now);
+            ActiveTranspilerCallGroup group = groups[groups.Count - 1];
+            if (finishPhysicalMeasurement && !group.Completed)
+            {
+                group.ProfilerFinalizerStartTicks = physicalEndTicks;
+                long inclusiveTicks;
+                long childTicks;
+                if (!CompletePatchMeasurement(group.MeasurementSequence, group.MeasurementIndex, physicalEndTicks, out inclusiveTicks, out childTicks))
+                {
+                    inclusiveTicks = Math.Max(0L, physicalEndTicks - group.StartTicks);
+                    childTicks = 0;
+                }
+                group.InclusiveTicks = inclusiveTicks;
+                group.ChildTicks = childTicks;
+                group.Completed = true;
+            }
 
-            bool queued = timing.Stat.Add(elapsedMs, frame, now, gcSample);
-            if (queued)
-                instance.QueueAnalyticsWork(timing.Stat);
+            if (!groupOwner)
+                return;
+
+            groups.RemoveAt(groups.Count - 1);
+            try
+            {
+                if (!group.Completed || group.Stats.Count == 0)
+                    return;
+
+                long measuredTicks = Math.Max(0L, group.InclusiveTicks - group.ChildTicks);
+                RecordInjectedTranspilerCallSample(instance, group.Stats, measuredTicks, group.InclusiveTicks);
+            }
+            finally
+            {
+                CompletePatchProfilerOverhead(group.ProfilerFinalizerStartTicks);
+            }
         }
         catch
         {
         }
     }
 
+    private static void RecordInjectedTranspilerCallSample(PatchProfilerTool instance, PatchStat stat, long measuredTicks, long inclusiveTicks)
+    {
+        if (stat == null || !TryPrepareInjectedTranspilerCallSample(instance, measuredTicks, inclusiveTicks, out double measuredMs, out int frame, out float now, out bool gcSample))
+            return;
+
+        bool queued = stat.Add(measuredMs, frame, now, gcSample);
+        if (queued)
+            instance.QueueAnalyticsWork(stat);
+    }
+
+    private static void RecordInjectedTranspilerCallSample(PatchProfilerTool instance, IEnumerable<PatchStat> stats, long measuredTicks, long inclusiveTicks)
+    {
+        if (!TryPrepareInjectedTranspilerCallSample(instance, measuredTicks, inclusiveTicks, out double measuredMs, out int frame, out float now, out bool gcSample))
+            return;
+
+        foreach (PatchStat stat in stats)
+        {
+            if (stat == null)
+                continue;
+            bool queued = stat.Add(measuredMs, frame, now, gcSample);
+            if (queued)
+                instance.QueueAnalyticsWork(stat);
+        }
+    }
+
+    private static bool TryPrepareInjectedTranspilerCallSample(PatchProfilerTool instance, long measuredTicks, long inclusiveTicks, out double measuredMs, out int frame, out float now, out bool gcSample)
+    {
+        measuredMs = 0;
+        frame = 0;
+        now = 0;
+        gcSample = false;
+        if (instance == null || measuredTicks < 0 || inclusiveTicks < 0)
+            return false;
+
+        measuredMs = measuredTicks * MsPerTick;
+        double inclusiveMs = inclusiveTicks * MsPerTick;
+
+        if (inclusiveMs >= GcCheckMinSampleMs)
+        {
+            gcSample =
+                GC.CollectionCount(0) != instance._lastObservedGc0 ||
+                GC.CollectionCount(1) != instance._lastObservedGc1 ||
+                GC.CollectionCount(2) != instance._lastObservedGc2;
+        }
+
+        if (gcSample && instance._ignoreGcAllocations)
+            return false;
+
+        frame = Time.frameCount;
+        now = Time.realtimeSinceStartup;
+        instance.SetCurrentRealtime(now);
+        return true;
+    }
+
     private static int CurrentInjectedTranspilerCallDepth() =>
         _activeTranspilerCallTimings?.Count ?? 0;
 
-    private static void TrimInjectedTranspilerCallStack(int depth)
+    private static int CurrentInjectedTranspilerCallGroupDepth() =>
+        _activeTranspilerCallGroups?.Count ?? 0;
+
+    private static void TrimInjectedTranspilerCallStack(int depth, int groupDepth)
     {
-        if (depth < 0)
-            return;
+        if (depth >= 0)
+        {
+            List<ActiveTranspilerCallTiming> stack = _activeTranspilerCallTimings;
+            if (stack != null && stack.Count > depth)
+                stack.RemoveRange(depth, stack.Count - depth);
+        }
 
-        List<ActiveTranspilerCallTiming> stack = _activeTranspilerCallTimings;
-        if (stack == null || stack.Count <= depth)
-            return;
-
-        stack.RemoveRange(depth, stack.Count - depth);
+        if (groupDepth >= 0)
+        {
+            List<ActiveTranspilerCallGroup> groups = _activeTranspilerCallGroups;
+            if (groups != null && groups.Count > groupDepth)
+            {
+                groups.RemoveRange(groupDepth, groups.Count - groupDepth);
+                // A leaked physical child makes the shared nesting stack ambiguous. Clear it so the
+                // enclosing finalizer falls back to its inclusive interval instead of subtracting bad data.
+                _activePatchMeasurementStack?.Clear();
+            }
+        }
     }
+
 }

@@ -18,9 +18,13 @@ internal sealed partial class PatchProfilerTool
 {
     private void RefreshPatchList()
     {
+        WriteCrashTrace("DISCOVERY BEGIN");
+        _listReady = false;
+        using var log = _instrumentationLog.BeginOperation("Discovery");
         try
         {
-            StopProfilingInternal(false);
+            if (!StopProfilingInternal(false))
+                return;
             _detailsWindow.RequestedVisible = false;
             _selectedTranspilerDetailsContext = null;
             _selectedTranspilerDetailsTitle = string.Empty;
@@ -41,7 +45,6 @@ internal sealed partial class PatchProfilerTool
 
             lock (_lock)
             {
-                _instrumented.Clear();
                 _transpiledTargets.Clear();
                 _stats.Clear();
                 _context.Clear();
@@ -66,6 +69,7 @@ internal sealed partial class PatchProfilerTool
             foreach (var target in Harmony.GetAllPatchedMethods())
             {
                 patchedTargets++;
+                WriteCrashTrace("DISCOVERY TARGET BEGIN", target);
 
                 var info = Harmony.GetPatchInfo(target);
                 if (info == null)
@@ -81,7 +85,13 @@ internal sealed partial class PatchProfilerTool
                     RegisterPatchMethod(p, "Finalizer", target, ref profileEntriesFound, oldSelection);
 
                 if (info.Transpilers != null && info.Transpilers.Any())
+                {
+                    WriteCrashTrace("DISCOVERY TRANSPILERS BEGIN", target);
                     RegisterTranspilers(info.Transpilers, target, ref profileEntriesFound, oldSelection);
+                    WriteCrashTrace("DISCOVERY TRANSPILERS END", target);
+                }
+
+                WriteCrashTrace("DISCOVERY TARGET END", target);
             }
 
             int transpiledTargetEntries;
@@ -92,6 +102,7 @@ internal sealed partial class PatchProfilerTool
                 transpilerCallEntries = _context.Values.Count(ctx => (ctx.PatchType ?? string.Empty).Contains("Transpiler call"));
             }
 
+            WriteCrashTrace($"DISCOVERY COMPLETE | targets={patchedTargets} entries={profileEntriesFound}");
             _listReady = true;
             _modsSelectionDirty = false;
             _profilingActive = false;
@@ -100,8 +111,10 @@ internal sealed partial class PatchProfilerTool
         }
         catch (Exception ex)
         {
+            WriteCrashTrace("DISCOVERY MANAGED EXCEPTION | " + ex);
             _status = $"Refresh error: {ex.GetType().Name}: {ex.Message}";
-            _logger.LogError(ex);
+            _safetyReport.Failure(null, "Discovery failed", ex);
+            log.Failure("Discovery failed", ex);
         }
     }
 
@@ -115,6 +128,7 @@ internal sealed partial class PatchProfilerTool
             return;
 
         string ownerId = string.IsNullOrWhiteSpace(p.owner) ? "(no owner)" : p.owner;
+
         string modGuid = GuessModGuid(m, ownerId);
         string modName = GuessModName(m, modGuid);
         string targetDisplay = GetMethodDisplay(target);
@@ -366,197 +380,82 @@ internal sealed partial class PatchProfilerTool
 
     private void StartProfiling()
     {
-        try
+        BeginStartProfiling();
+    }
+
+    private void RemoveRuntimeMethod(MethodBase method)
+    {
+        lock (_lock)
         {
-            RefreshPatchList();
-
-            if (!_listReady)
+            _runtimeEntriesByInstrumentedMethod.Remove(method);
+            _runtimeTranspiledTargets.Remove(method);
+            if (_runtimeTranspilerCallPlans.TryGetValue(method, out RuntimeTranspilerCallPlan[] plans))
             {
-                _status = "Patch list is empty.";
-                return;
+                foreach (RuntimeTranspilerCallPlan plan in plans)
+                    _runtimeTranspilerCallStats.Remove(plan.EntryId);
+                _runtimeTranspilerCallPlans.Remove(method);
             }
-
-            if (_profilingActive)
-            {
-                _status = "Profiling is already active.";
-                return;
-            }
-
-            SaveModSelection();
-            _statsFrozen = false;
-
-            int newlyInstrumented = 0;
-            int instrumentationFailures = 0;
-            int callSiteTimingFailures = 0;
-
-            List<MethodBase> methods;
-            lock (_lock)
-            {
-                RebuildRuntimeProfileMapLocked();
-                methods = _runtimeEntriesByInstrumentedMethod.Keys
-                    .Concat(_runtimeTranspiledTargets)
-                    .Where(method => method != null)
-                    .Distinct()
-                    .ToList();
-            }
-
-            foreach (var method in methods)
-            {
-                lock (_lock)
-                {
-                    if (_instrumented.Contains(method))
-                        continue;
-
-                    _instrumented.Add(method);
-                }
-
-                try
-                {
-                    var prefix = new HarmonyMethod(AccessTools.Method(typeof(PatchProfilerTool), nameof(TimingPrefix)))
-                    {
-                        priority = Priority.Last
-                    };
-
-                    var finalizer = new HarmonyMethod(AccessTools.Method(typeof(PatchProfilerTool), nameof(TimingFinalizer)))
-                    {
-                        priority = Priority.First
-                    };
-
-                    HarmonyMethod callSiteTranspiler = null;
-                    if (_runtimeTranspilerCallPlans.ContainsKey(method))
-                    {
-                        string[] existingTranspilerOwners = Harmony.GetPatchInfo(method)?.Transpilers
-                            ?.Where(patch => patch != null &&
-                                             !string.IsNullOrWhiteSpace(patch.owner) &&
-                                             !string.Equals(patch.owner, PluginGuid, StringComparison.Ordinal))
-                            .Select(patch => patch.owner)
-                            .Distinct(StringComparer.Ordinal)
-                            .ToArray() ?? Array.Empty<string>();
-
-                        callSiteTranspiler = new HarmonyMethod(
-                            AccessTools.Method(typeof(PatchProfilerTool), nameof(InjectedCallTimingTranspiler)))
-                        {
-                            priority = Priority.Last,
-                            after = existingTranspilerOwners
-                        };
-                    }
-
-                    // Install target/method timing first. Exact transpiler-call timing is added in a
-                    // separate wrapper rebuild so a call-site instrumentation failure cannot remove
-                    // the ordinary patch or whole-target measurement for this method.
-                    _harmony.Patch(
-                        method,
-                        prefix: prefix,
-                        finalizer: finalizer);
-                    newlyInstrumented++;
-
-                    if (callSiteTranspiler != null)
-                    {
-                        try
-                        {
-                            _harmony.Patch(method, transpiler: callSiteTranspiler);
-                        }
-                        catch (Exception callSiteException)
-                        {
-                            callSiteTimingFailures++;
-                            _logger.LogWarning(
-                                $"Could not instrument exact transpiler call sites in {GetMethodDisplay(method)}: " +
-                                $"{callSiteException.GetType().Name}: {callSiteException.Message}");
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    instrumentationFailures++;
-                    lock (_lock)
-                        _instrumented.Remove(method);
-
-                    _logger.LogWarning($"Could not instrument {GetMethodDisplay(method)}: {ex.GetType().Name}: {ex.Message}");
-                }
-            }
-
-            _profilingActive = true;
-            _status = $"Profiling enabled. Instrumented: {newlyInstrumented}.";
-            if (instrumentationFailures > 0)
-                _status += $" Failed: {instrumentationFailures}.";
-            if (callSiteTimingFailures > 0)
-                _status += $" Transpiler call-site failures: {callSiteTimingFailures}.";
-            MarkViewDirty();
-        }
-        catch (Exception ex)
-        {
-            _status = $"Start error: {ex.GetType().Name}: {ex.Message}";
-            _logger.LogError(ex);
         }
     }
 
     private void StopProfiling()
     {
-        try
-        {
-            StopProfilingInternal(true);
-            _status = "Profiling paused. Data frozen.";
-            MarkViewDirty();
-        }
-        catch (Exception ex)
-        {
-            _status = $"Pause error: {ex.GetType().Name}: {ex.Message}";
-            _logger.LogError(ex);
-        }
+        BeginStopProfiling(freezeData: true, restartAfterRemoval: false);
+        MarkViewDirty();
     }
 
-    private void StopProfilingInternal(bool freezeData = false)
+    private bool StopProfilingInternal(bool freezeData = false)
     {
+        AbortTransitionForSynchronousCleanup();
         bool wasActive = _profilingActive;
-
         _profilingActive = false;
-        _harmony.UnpatchSelf();
-
-        lock (_lock)
+        bool clean = true;
+        if (_instrumentation.HasPending)
         {
-            _instrumented.Clear();
-            _runtimeEntriesByInstrumentedMethod = new Dictionary<MethodBase, RuntimeProfileEntry[]>(0);
-            _runtimeTranspiledTargets = new HashSet<MethodBase>();
-            _runtimeTranspilerCallPlans = new Dictionary<MethodBase, RuntimeTranspilerCallPlan[]>(0);
-            _runtimeTranspilerCallStats = new Dictionary<int, PatchStat>(0);
+            WriteCrashTrace("UNPATCH BEGIN");
+            using var log = _instrumentationLog.BeginOperation("Removal");
+            try
+            {
+                InstrumentationSession.CleanupResult result = _instrumentation.RemoveAll(log);
+                clean = result.Verified;
+                log.Summary(result.Summary, !clean);
+                WriteCrashTrace("UNPATCH END | " + result.Summary);
+            }
+            catch (Exception ex)
+            {
+                clean = false;
+                _safetyReport.Failure(null, "Removal interrupted", ex, restartRequired: true);
+                log.Failure("Removal interrupted", ex);
+                WriteCrashTrace("UNPATCH INTERRUPTED | " + ex);
+                _instrumentation.RequireRestart(null, "Removal did not complete.");
+            }
         }
-
+        ClearPatchRuntimeDispatch();
         if (wasActive && freezeData)
-        {
-            float now = Time.realtimeSinceStartup;
-            int frame = Time.frameCount;
-
-            SetCurrentRealtime(now);
-            FlushAnalyticsAt(now);
-
-            _frozenRealtime = now;
-            _frozenFrame = frame;
-            _statsFrozen = true;
-        }
+            FreezePatchDataNow();
+        clean &= !_app.InstrumentationSafety.RestartRequired;
+        if (!clean)
+            _status = _app.InstrumentationSafety.RestartMessage;
+        return clean;
     }
 
     private void ResetProfilingSelection()
     {
+        if (IsTransitioning)
+        {
+            _status = "Wait for the current instrumentation operation to finish.";
+            return;
+        }
         if (!_listReady)
         {
             _status = "Patch list is empty. Load patch list first.";
             return;
         }
-
         SaveModSelection();
-
-        bool wasActive = _profilingActive;
-        StopProfilingInternal(false);
-
-        if (wasActive)
-        {
-            StartProfiling();
-        }
+        if (_profilingActive)
+            BeginStopProfiling(freezeData: false, restartAfterRemoval: true);
         else
-        {
             _status = "Profiling selection updated. Start profiling to apply.";
-            MarkViewDirty();
-        }
+        MarkViewDirty();
     }
-
 }

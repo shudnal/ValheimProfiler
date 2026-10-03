@@ -63,4 +63,22 @@ internal static class ProfilerGui
 
         return result;
     }
+
+    internal static void ProgressBar(ThemeManager theme, float progress, string text, float height = 22f)
+    {
+        progress = Mathf.Clamp01(progress);
+        Rect rect = GUILayoutUtility.GetRect(1f, height, GUILayout.ExpandWidth(true), GUILayout.Height(height));
+        GUI.Box(rect, GUIContent.none);
+        if (progress > 0f)
+        {
+            Rect fill = rect;
+            fill.width *= progress;
+            Color old = GUI.color;
+            GUI.color = theme?.AccentColor ?? old;
+            GUI.Box(fill, GUIContent.none);
+            GUI.color = old;
+        }
+        if (!string.IsNullOrEmpty(text))
+            GUI.Label(rect, text, GUI.skin.label);
+    }
 }

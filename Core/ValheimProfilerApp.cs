@@ -19,6 +19,7 @@ internal sealed class ValheimProfilerApp
 
     private ProfilerWindow _launcherWindow;
     private PatchProfilerTool _patchProfiler;
+    private GeneralMethodProfilerTool _generalMethodProfiler;
     private MonoBehaviourProfilerTool _monoBehaviourProfiler;
     private MonoBehaviourCallProfilerTool _monoBehaviourCallProfiler;
     private ValheimUpdateProfilerTool _valheimUpdateProfiler;
@@ -49,6 +50,7 @@ internal sealed class ValheimProfilerApp
     internal TooltipManager Tooltips => _tooltips;
     internal WindowManager Windows => _windows;
     internal ManualLogSource Logger => _logger;
+    internal InstrumentationSafety InstrumentationSafety { get; } = new InstrumentationSafety();
     internal ServerLogMonitorTool ServerLogMonitor => _serverLogMonitor;
     internal NetworkProfilerTool NetworkProfiler => _networkProfiler;
 
@@ -70,6 +72,7 @@ internal sealed class ValheimProfilerApp
         _logMonitor = new LogMonitorTool(this);
 
         _patchProfiler = _tools.Register(new PatchProfilerTool(this));
+        _generalMethodProfiler = _tools.Register(new GeneralMethodProfilerTool(this));
         _monoBehaviourProfiler = _tools.Register(new MonoBehaviourProfilerTool(this));
         _monoBehaviourCallProfiler = _tools.Register(new MonoBehaviourCallProfilerTool(this));
         _valheimUpdateProfiler = _tools.Register(new ValheimUpdateProfilerTool(this));
@@ -85,7 +88,10 @@ internal sealed class ValheimProfilerApp
         if (_config.GlobalHotkey.Value.IsDown())
             SetUiVisible(!_uiVisible);
 
-        HandleToolHotkey(_config.PatchProfilerHotkey.Value.IsDown(), _patchProfiler);
+        bool generalPressed = _config.GeneralMethodProfilerHotkey.Value.IsDown();
+        HandleToolHotkey(generalPressed, _generalMethodProfiler);
+        if (!generalPressed)
+            HandleToolHotkey(_config.PatchProfilerHotkey.Value.IsDown(), _patchProfiler);
 
         // More specific configured shortcuts are evaluated first because BepInEx KeyboardShortcut
         // accepts additional held modifiers for an unmodified shortcut.
@@ -173,6 +179,7 @@ internal sealed class ValheimProfilerApp
 
         _tools.Shutdown();
         _patchProfiler = null;
+        _generalMethodProfiler = null;
         _monoBehaviourProfiler = null;
         _monoBehaviourCallProfiler = null;
         _valheimUpdateProfiler = null;

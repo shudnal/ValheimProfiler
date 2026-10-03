@@ -23,6 +23,7 @@ internal sealed partial class PatchProfilerTool
         _drawCountColumnWidth = CalculateHeaderAwareColumnWidth(CountColumnWidth, "> p99", "> p95", "samples", "gc samples", "9999999+");
         _drawAvgTimeColumnWidth = CalculateHeaderAwareColumnWidth(AvgTimeColumnWidth, "ms per frame", "000.000");
         _drawAvgCountColumnWidth = CalculateHeaderAwareColumnWidth(AvgCountColumnWidth, "calls per frame", "9999999+");
+        _drawAvgCallColumnWidth = CalculateHeaderAwareColumnWidth(AvgCallColumnWidth, "avg call", "999.99 us");
 
         List<FlatRowView> layoutRows = GetLayoutRows();
         _drawModColumnWidth = CalculateModColumnWidth(layoutRows);
@@ -98,11 +99,14 @@ internal sealed partial class PatchProfilerTool
             if (_profilerView == ProfilerView.Avg1s)
             {
                 DrawSortableHeaderCell(ref x, y, _drawAvgTimeColumnWidth, height, "ms per frame",
-                    "Average measured patch execution time contributed per rendered frame in the rolling one-second window.\nClick to sort descending by this column.",
+                    "Accepted measured patch time during the rolling one-second window divided by Target FPS. This estimates the patch contribution to one target frame even when the game's current FPS is different.\nClick to sort descending by this column.",
                     TableSortColumn.AvgMsPerFrame);
                 DrawSortableHeaderCell(ref x, y, _drawAvgCountColumnWidth, height, "calls per frame",
-                    "Average number of measured patch invocations per rendered frame in the rolling one-second window.\nClick to sort descending by this column.",
+                    "Accepted patch calls during the rolling one-second window divided by Target FPS. Empty target frames are included in this fixed denominator.\nClick to sort descending by this column.",
                     TableSortColumn.AvgCallsPerFrame);
+                DrawSortableHeaderCell(ref x, y, _drawAvgCallColumnWidth, height, "avg call",
+                    "Average duration of one accepted measured patch call during the rolling one-second window. Units automatically switch between ms, us and ns. This value does not depend on Target FPS.\nClick to sort descending by this column.",
+                    TableSortColumn.AvgCall);
             }
             else
             {
@@ -210,6 +214,7 @@ internal sealed partial class PatchProfilerTool
             DrawGuiLabel(ref x, y, _drawModColumnWidth, height, "Total", _groupLabelStyle);
             DrawGuiLabel(ref x, y, _drawAvgTimeColumnWidth, height, FormatMs(_cachedTotalSummary.Avg1sMsPerFrame), _labelStyle);
             DrawGuiLabel(ref x, y, _drawAvgCountColumnWidth, height, FormatCount(_cachedTotalSummary.Avg1sCallsPerFrame), _labelStyle);
+            DrawGuiLabel(ref x, y, _drawAvgCallColumnWidth, height, FormatAverageCall(_cachedTotalSummary.Avg1sAverageCallMs), _labelStyle);
             DrawGuiLabel(ref x, y, _drawPatchTypeColumnWidth, height, string.Empty, _labelStyle);
             DrawGuiLabel(ref x, y, _drawTargetColumnWidth, height, string.Empty, _labelStyle);
             DrawGuiLabel(ref x, y, _drawPatchMethodColumnWidth, height, string.Empty, _labelStyle);
@@ -345,6 +350,7 @@ internal sealed partial class PatchProfilerTool
         {
             width += _drawAvgTimeColumnWidth;
             width += _drawAvgCountColumnWidth;
+            width += _drawAvgCallColumnWidth;
         }
         else
         {

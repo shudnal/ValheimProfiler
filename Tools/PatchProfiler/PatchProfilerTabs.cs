@@ -85,6 +85,9 @@ internal sealed partial class PatchProfilerTool
 
         GUILayout.BeginHorizontal();
 
+        bool oldEnabled = GUI.enabled;
+        GUI.enabled = oldEnabled && !IsTransitioning;
+
         if (GUILayout.Button("Enable all", GUILayout.Width(88f)))
         {
             bool changed = false;
@@ -121,13 +124,13 @@ internal sealed partial class PatchProfilerTool
             _modsSelectionDirty |= changed;
         }
 
-        GUI.enabled = _modsSelectionDirty;
+        GUI.enabled = oldEnabled && !IsTransitioning && _modsSelectionDirty;
         GUIStyle applyStyle = _modsSelectionDirty ? _theme.AccentButtonStyle : GUI.skin.button;
         if (GUILayout.Button("Apply selection", applyStyle, GUILayout.Width(110f)))
         {
             ResetProfilingSelection();
         }
-        GUI.enabled = true;
+        GUI.enabled = oldEnabled;
 
         if (_modsSelectionDirty)
         {
@@ -249,11 +252,12 @@ internal sealed partial class PatchProfilerTool
         Label("The main table shows only entries that received samples. A detected target or call remains absent until that code path executes after profiling starts.");
         GUILayout.Space(6f);
 
-        GroupLabel("Over 1 sec");
-        Label("This view uses a rolling 1 second window.");
-        Label("\"ms per frame\" is the average amount of frame time spent inside measured patch methods.");
-        Label("\"calls per frame\" is the average number of calls per frame during the same window.");
-        Label("The Total row is the sum for all currently measured patch methods.");
+        GroupLabel("Frame budget");
+        Label("This view uses the last one second of accepted measurements and normalizes them to the configured Target FPS.");
+        Label("\"ms per frame\" is one-second measured time divided by Target FPS, not by the game's current FPS. Empty target frames are therefore included in the fixed denominator.");
+        Label("\"calls per frame\" is one-second accepted calls divided by the same Target FPS.");
+        Label("\"avg call\" is measured time divided by calls and automatically displays ms, us or ns. It is independent of Target FPS.");
+        Label("The Total row is the sum for all currently measured patch methods; its avg call is total measured time divided by total calls.");
         Label("Click a table column header to sort. Text columns use ascending order; numeric columns use descending order. The active header shows ▲ or ▼.");
         GUILayout.Space(6f);
 
@@ -275,15 +279,36 @@ internal sealed partial class PatchProfilerTool
         GroupLabel("GC samples");
         Label("\"gc samples\" counts slow measured calls where a GC collection counter changed during the current frame before the sample ended.");
         Label("Only samples >= 1 ms are checked to keep profiler overhead low.");
-        Label("Such samples are not automatically fake: the profiled code may allocate enough to trigger GC.");
+        Label("The profiler does not try to attribute the collection to one method; any affected sample can be excluded as potentially contaminated.");
         Label("But if a row has high raw max and GC samples, interpret the raw max carefully.");
         Label("Enable Ignore gc allocations to discard GC-associated samples before they enter any profiler statistics. Changing the option resets the current statistics.");
+        Label("Exclude nested calls subtracts nested intervals measured by Patch Profiler and Patch Profiler timing-bookkeeping around those nested measurements. Unmeasured calls remain part of the parent; changing the option resets statistics.");
         GUILayout.Space(6f);
 
         GroupLabel("Frame budget");
         Label("A 60 FPS target gives about 16.6 ms for the whole frame.");
         Label("A 30 FPS target gives about 33.3 ms.");
         Label("Patch time is only one part of the frame, so small values can still matter if they happen very often.");
+        GUILayout.Space(6f);
+
+        GroupLabel("Instrumentation lifecycle");
+        Label("With Gradual start enabled, large Patch/General install and removal plans are spread across Unity frames with a 400 ms / 2560-operation backend budget and visible progress.");
+        Label("Disable Gradual start to process the complete install/removal plan in one Unity frame. This restores one long blocking transition. One Harmony rebuild remains indivisible and can exceed the gradual budget by itself.");
+        Label("Sampling starts only after installation completes and stops before removal begins.");
+        Label("Cancel during installation reverses the current install progress back toward zero while removing the installed subset; preparation/discovery remains synchronous.");
+        GUILayout.Space(6f);
+
+        GroupLabel("Instrumentation safety");
+        Label("Patch and General Method profiling share a preflight guard before Harmony installs timing patches.");
+        Label("Same-named methods in different assemblies are independent candidates; no helper-name or shared-owner duplicate heuristic is used.");
+        Label("Only the same actual MethodBase is reserved across tools. Separate helper copies are not merged or excluded by name.");
+        Label("Skipped methods is yellow for real failures and lists installation/rollback/removal errors before ordinary exclusions. Failures survive Reset stats; use Failures only to hide routine exclusions.");
+        Label("Removal drops all profiler callbacks in one rebuild per method and continues after individual errors. Uncertain recovery blocks new Patch/General captures until game restart. Reset stats is not a patch or scene-state rollback.");
+        Label("Preflight excludes unsupported generics, IL-less or return-less bodies, unsafe locals and runtime infrastructure without invoking or JIT-compiling targets.");
+        Label("Direct instrumentation of methods declared on value types (structs), including static methods and operators, is conservatively excluded. Class methods returning or accepting structs are not excluded by this rule. Prevented attempts are normal safety skips, not installation failures.");
+        Label("General / Logging enabled adds compact failures and grouped safety skips. The ordinary log shows at most 10 failure identities and 8 skip groups per operation; installation and cleanup share one method line. Full details and exception stacks go to separate latest/previous reports under BepInEx/config/shudnal.ValheimProfiler. Write crash trace remains independent.");
+        Label("The resolver cache is cleared before and after each Patch/General backend operation, including IL discovery, installation, rollback and removal. The old Skip embedded helper callbacks switch was removed. A failed reset prevents unprotected backend work and blocks further capture.");
+        Label("Automatic checks reduce known detour risks; native crashes cannot be recovered by a managed exception handler.");
         GUILayout.Space(6f);
 
         GroupLabel("Notes");

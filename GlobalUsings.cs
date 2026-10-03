@@ -16,3 +16,5 @@ global using ValheimProfiler.Tools.ServerLogMonitor;
 global using ValheimProfiler.Tools.ValheimUpdateProfiler;
 
 global using ValheimProfiler.Tools.NetworkProfiler;
+
+global using ValheimProfiler.Tools.GeneralMethodProfiler;

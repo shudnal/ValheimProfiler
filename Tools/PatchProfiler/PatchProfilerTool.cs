@@ -31,6 +31,7 @@ internal sealed partial class PatchProfilerTool : IProfilerTool
     private const float CountColumnWidth = 82f;
     private const float AvgTimeColumnWidth = 104f;
     private const float AvgCountColumnWidth = 112f;
+    private const float AvgCallColumnWidth = 96f;
     private const float MethodColumnMinWidth = 260f;
     private const float TargetColumnMinWidth = 180f;
     private const float TargetColumnMaxWidth = 900f;
@@ -55,12 +56,15 @@ internal sealed partial class PatchProfilerTool : IProfilerTool
 
     private readonly ValheimProfilerApp _app;
     private readonly ManualLogSource _logger;
+    private readonly InstrumentationLog _instrumentationLog;
     private readonly WindowManager _windows;
     private readonly ThemeManager _theme;
     private readonly Harmony _harmony;
+    private readonly InstrumentationSession _instrumentation;
     private readonly ProfilerWindow _mainWindow;
     private readonly ProfilerWindow _detailsWindow;
     private readonly ModSelectionPolicy _modSelectionPolicy;
+    private readonly InstrumentationReportView _safetyReport = new InstrumentationReportView();
 
     private Vector2 _scroll;
     private Vector2 _modsScroll;
@@ -80,8 +84,50 @@ internal sealed partial class PatchProfilerTool : IProfilerTool
     private bool _listReady;
     private bool _modsSelectionDirty;
     private volatile bool _profilingActive;
+
+    private enum InstrumentationTransition
+    {
+        None = 0,
+        Installing = 1,
+        Removing = 2,
+        RollingBack = 3
+    }
+
+    private InstrumentationTransition _instrumentationTransition;
+    private List<MethodBase> _installPlan = new List<MethodBase>();
+    private InstrumentationCatalog _installCatalog;
+    private int _installIndex;
+    private int _installSelectedCount;
+    private int _installNotAttempted;
+    private MethodBase _installCurrentMethod;
+    private HarmonyMethod _installCurrentPrefix;
+    private HarmonyMethod _installCurrentFinalizer;
+    private HarmonyMethod _installCurrentCallSiteTranspiler;
+    private bool _installTimingInstalled;
+    private int _installInstrumentationFailures;
+    private int _installCallSiteFailures;
+    private int _installSafetySkipped;
+    private int _installSkippedByLimit;
+    private bool _installCancelRequested;
+    private InstrumentationLog.Operation _transitionLog;
+    private MethodBase[] _removalPlan = Array.Empty<MethodBase>();
+    private int _removalIndex;
+    private int _removalAttempted;
+    private int _removalRemoved;
+    private bool _restartAfterRemoval;
+    private string _transitionCurrentMethod = string.Empty;
+    private int _rollbackProgressStart;
+    private int _rollbackProgressTotal;
+
+    private bool IsTransitioning => _instrumentationTransition != InstrumentationTransition.None;
+
     private bool _groupByMod = true;
     private volatile bool _ignoreGcAllocations;
+    private volatile bool _excludeMeasuredNestedCalls;
+    private bool _gradualProfilingStart;
+    private string _targetFpsText;
+    private bool _crashTraceEnabled;
+    private int _diagnosticInstrumentationLimit;
 
     private int _currentFrame;
     private int _currentRealtimeMs;
@@ -103,6 +149,7 @@ internal sealed partial class PatchProfilerTool : IProfilerTool
     private float _drawCountColumnWidth;
     private float _drawAvgTimeColumnWidth;
     private float _drawAvgCountColumnWidth;
+    private float _drawAvgCallColumnWidth;
     private bool _layoutMetricsDirty = true;
     private float _lastLayoutWindowWidth = -1f;
     private ProfilerView _lastLayoutProfilerView = (ProfilerView)(-1);
@@ -121,7 +168,6 @@ internal sealed partial class PatchProfilerTool : IProfilerTool
     private readonly Dictionary<MethodBase, List<int>> _entriesByInstrumentedMethod = new Dictionary<MethodBase, List<int>>(256);
     private Dictionary<MethodBase, RuntimeProfileEntry[]> _runtimeEntriesByInstrumentedMethod = new Dictionary<MethodBase, RuntimeProfileEntry[]>(0);
     private HashSet<MethodBase> _runtimeTranspiledTargets = new HashSet<MethodBase>();
-    private readonly HashSet<MethodBase> _instrumented = new HashSet<MethodBase>();
     private readonly HashSet<MethodBase> _transpiledTargets = new HashSet<MethodBase>();
 
     private readonly Dictionary<string, bool> _modExpanded = new Dictionary<string, bool>();
@@ -158,7 +204,8 @@ internal sealed partial class PatchProfilerTool : IProfilerTool
     {
         Profiler = 0,
         ModsToProfile = 1,
-        Help = 2
+        Help = 2,
+        Safety = 3
     }
 
     private enum ProfilerView
@@ -172,21 +219,22 @@ internal sealed partial class PatchProfilerTool : IProfilerTool
         Mod = 0,
         AvgMsPerFrame = 1,
         AvgCallsPerFrame = 2,
-        RawMax = 3,
-        SecondMax = 4,
-        ThirdMax = 5,
-        AboveP99 = 6,
-        AvgAboveP99 = 7,
-        P99 = 8,
-        AboveP95 = 9,
-        AvgAboveP95 = 10,
-        P95 = 11,
-        Samples = 12,
-        GcSamples = 13,
-        PatchType = 14,
-        Target = 15,
-        PatchMethod = 16,
-        CombinedMethod = 17
+        AvgCall = 3,
+        RawMax = 4,
+        SecondMax = 5,
+        ThirdMax = 6,
+        AboveP99 = 7,
+        AvgAboveP99 = 8,
+        P99 = 9,
+        AboveP95 = 10,
+        AvgAboveP95 = 11,
+        P95 = 12,
+        Samples = 13,
+        GcSamples = 14,
+        PatchType = 15,
+        Target = 16,
+        PatchMethod = 17,
+        CombinedMethod = 18
     }
 
     private MainTab _mainTab = MainTab.Profiler;
@@ -198,9 +246,11 @@ internal sealed partial class PatchProfilerTool : IProfilerTool
     {
         _app = app ?? throw new ArgumentNullException(nameof(app));
         _logger = app.Logger;
+        _instrumentationLog = new InstrumentationLog(_logger, app.Config, PluginName);
         _windows = app.Windows;
         _theme = app.Theme;
         _harmony = new Harmony(PluginGuid);
+        _instrumentation = new InstrumentationSession(_harmony, app.InstrumentationSafety, _safetyReport.Report, _instrumentationLog, WriteCrashTrace);
         _modSelectionPolicy = new ModSelectionPolicy(
             ProfilerPaths.GetConfigFilePath("PatchProfilerSelection.cfg"));
 
@@ -217,6 +267,10 @@ internal sealed partial class PatchProfilerTool : IProfilerTool
             ProfilerView.MaxOver60Sec,
             TableSortColumn.ThirdMax);
         _ignoreGcAllocations = config.PatchProfilerIgnoreGcAllocations.Value;
+        _excludeMeasuredNestedCalls = config.PatchProfilerExcludeMeasuredNestedCalls.Value;
+        _gradualProfilingStart = config.PatchProfilerGradualProfilingStart.Value;
+        _targetFpsText = Math.Max(1, config.FrameBudgetTargetFps.Value).ToString();
+        ReadCrashDiagnosticOptions();
 
         var patchMinimumSize = new Vector2(720f, 360f);
         var detailsMinimumSize = new Vector2(520f, 280f);
@@ -276,6 +330,7 @@ internal sealed partial class PatchProfilerTool : IProfilerTool
     void IProfilerTool.Shutdown() => Shutdown();
 
     private float CurrentRealtime => Volatile.Read(ref _currentRealtimeMs) * 0.001f;
+    private int FrameBudgetTargetFps => Math.Max(1, _app.Config.FrameBudgetTargetFps.Value);
     private int DisplayFrame => _statsFrozen ? _frozenFrame : _currentFrame;
     private float DisplayRealtime => _statsFrozen ? _frozenRealtime : CurrentRealtime;
     private float CurrentRowHeight => Mathf.Max(
@@ -303,6 +358,12 @@ internal sealed partial class PatchProfilerTool : IProfilerTool
 
     internal void Update()
     {
+        if (IsTransitioning)
+            ProcessInstrumentationTransitionSafely();
+        else
+            ProcessCallSiteRebuildFailures();
+        if (_profilingActive && _app.InstrumentationSafety.RestartRequired && !IsTransitioning)
+            BeginStopProfiling(freezeData: true, restartAfterRemoval: false);
         _currentFrame = Time.frameCount;
         SetCurrentRealtime(Time.realtimeSinceStartup);
         UpdateGcBaseline();
@@ -315,13 +376,18 @@ internal sealed partial class PatchProfilerTool : IProfilerTool
 
         try
         {
+            AbortTransitionForSynchronousCleanup();
             StopProfilingInternal(false);
         }
-        catch
+        catch (Exception ex)
         {
+            _safetyReport.Failure(null, "Shutdown cleanup interrupted", ex, restartRequired: true);
+            _instrumentation.RequireRestart(null, "Shutdown cleanup did not complete.");
+            _instrumentationLog.Failure("Shutdown cleanup interrupted", ex, warning: true);
         }
 
         StopAnalyticsThread();
+        EndCrashTraceRun();
         IsWindowVisible = false;
     }
 

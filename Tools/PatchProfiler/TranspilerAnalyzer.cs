@@ -40,8 +40,18 @@ internal sealed partial class PatchProfilerTool
 
         try
         {
-            originalInstructions = PatchProcessor.GetOriginalInstructions(target);
-            finalInstructions = PatchProcessor.GetCurrentInstructions(target);
+            // These APIs also use the resolver while importing IL. Reset separately for each
+            // materialized instruction list, not only around the later Harmony mutations.
+            originalInstructions = MonoModResolverCache.Run(() => PatchProcessor.GetOriginalInstructions(target),
+                message => WriteCrashTrace(message, target));
+            finalInstructions = MonoModResolverCache.Run(() => PatchProcessor.GetCurrentInstructions(target),
+                message => WriteCrashTrace(message, target));
+        }
+        catch (ResolverCacheException ex)
+        {
+            _safetyReport.Failure(target, "Resolver cache reset failed during IL discovery", ex, restartRequired: true);
+            _instrumentation.RequireRestart(target, "The resolver cache could not be cleared during discovery; instrumentation was not started.");
+            throw; // Abort discovery, rather than silently falling back to unprotected generation.
         }
         catch (Exception ex)
         {

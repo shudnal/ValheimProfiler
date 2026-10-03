@@ -16,11 +16,100 @@ namespace ValheimProfiler.Tools.PatchProfiler;
 
 internal sealed partial class PatchProfilerTool
 {
+    [ThreadStatic]
+    private static List<PatchMeasurementFrame> _activePatchMeasurementStack;
+
+    private static long _nextPatchMeasurementSequence;
+
+    private static long BeginPatchProfilerOverhead(PatchProfilerTool instance)
+    {
+        if (instance == null || !instance._excludeMeasuredNestedCalls)
+            return 0L;
+        List<PatchMeasurementFrame> stack = _activePatchMeasurementStack;
+        return stack != null && stack.Count > 0 ? Stopwatch.GetTimestamp() : 0L;
+    }
+
+    private static void CompletePatchProfilerOverhead(long startTicks)
+    {
+        if (startTicks <= 0)
+            return;
+        try
+        {
+            List<PatchMeasurementFrame> stack = _activePatchMeasurementStack;
+            if (stack == null || stack.Count == 0)
+                return;
+            long endTicks = Stopwatch.GetTimestamp();
+            int parentIndex = stack.Count - 1;
+            PatchMeasurementFrame parent = stack[parentIndex];
+            parent.ChildTicks += Math.Max(0L, endTicks - startTicks);
+            stack[parentIndex] = parent;
+        }
+        catch
+        {
+        }
+    }
+
+    private static void BeginPatchMeasurement(long profilerOverheadStartTicks, out long sequence, out int index, out long startTicks)
+    {
+        _activePatchMeasurementStack ??= new List<PatchMeasurementFrame>(16);
+        index = _activePatchMeasurementStack.Count;
+        sequence = Interlocked.Increment(ref _nextPatchMeasurementSequence);
+        var frame = new PatchMeasurementFrame
+        {
+            Sequence = sequence,
+            ChildTicks = 0
+        };
+        _activePatchMeasurementStack.Add(frame);
+        startTicks = Stopwatch.GetTimestamp();
+        frame.StartTicks = startTicks;
+        if (profilerOverheadStartTicks > 0)
+            frame.ProfilerPrefixTicks = Math.Max(0L, startTicks - profilerOverheadStartTicks);
+        _activePatchMeasurementStack[index] = frame;
+    }
+
+    private static bool CompletePatchMeasurement(long sequence, int index, long endTicks, out long inclusiveTicks, out long childTicks)
+    {
+        inclusiveTicks = 0;
+        childTicks = 0;
+        List<PatchMeasurementFrame> stack = _activePatchMeasurementStack;
+        if (sequence == 0 || stack == null || index < 0 || index != stack.Count - 1 || stack[index].Sequence != sequence)
+        {
+            stack?.Clear();
+            return false;
+        }
+
+        PatchMeasurementFrame frame = stack[index];
+        stack.RemoveAt(index);
+        inclusiveTicks = Math.Max(0L, endTicks - frame.StartTicks);
+        childTicks = Math.Max(0L, frame.ChildTicks);
+
+        if (stack.Count > 0)
+        {
+            int parentIndex = stack.Count - 1;
+            PatchMeasurementFrame parent = stack[parentIndex];
+            // Self mode excludes both the physical child interval and profiler prefix work before that interval.
+            parent.ChildTicks += inclusiveTicks + Math.Max(0L, frame.ProfilerPrefixTicks);
+            stack[parentIndex] = parent;
+        }
+
+        return true;
+    }
+
+    private static void ResetPatchMeasurementStack()
+    {
+        _activePatchMeasurementStack?.Clear();
+        _activeTranspilerCallTimings?.Clear();
+        _activeTranspilerCallGroups?.Clear();
+    }
+
     private static void TimingPrefix(MethodBase __originalMethod, ref TimingState __state)
     {
-        __state.StartTicks = Stopwatch.GetTimestamp();
+        __state.StartTicks = 0;
+        __state.MeasurementSequence = 0;
+        __state.MeasurementIndex = -1;
         __state.ActiveTranspiledTarget = null;
         __state.TranspilerCallStackDepth = -1;
+        __state.TranspilerCallGroupDepth = -1;
 
         try
         {
@@ -28,15 +117,25 @@ internal sealed partial class PatchProfilerTool
                 return;
 
             var inst = _instance;
-            if (inst == null)
+            long profilerOverheadStartTicks = inst != null && inst._excludeMeasuredNestedCalls
+                ? BeginPatchProfilerOverhead(inst)
+                : 0L;
+            if (inst == null || !inst._profilingActive || inst._app.InstrumentationSafety.RestartRequired)
                 return;
 
             if (inst.IsTranspiledTarget(__originalMethod))
             {
                 __state.TranspilerCallStackDepth = CurrentInjectedTranspilerCallDepth();
+                __state.TranspilerCallGroupDepth = CurrentInjectedTranspilerCallGroupDepth();
                 PushActiveTranspiledTarget(__originalMethod);
                 __state.ActiveTranspiledTarget = __originalMethod;
             }
+
+            // Match General Method Profiler semantics: profiler bookkeeping is outside the measured interval.
+            if (inst._excludeMeasuredNestedCalls)
+                BeginPatchMeasurement(profilerOverheadStartTicks, out __state.MeasurementSequence, out __state.MeasurementIndex, out __state.StartTicks);
+            else
+                __state.StartTicks = Stopwatch.GetTimestamp();
         }
         catch
         {
@@ -45,6 +144,8 @@ internal sealed partial class PatchProfilerTool
 
     private static Exception TimingFinalizer(Exception __exception, TimingState __state, MethodBase __originalMethod)
     {
+        bool excludeNested = __state.MeasurementSequence != 0;
+        long end = excludeNested && __state.StartTicks > 0 ? Stopwatch.GetTimestamp() : 0L;
         try
         {
             if (__state.StartTicks <= 0)
@@ -53,20 +154,31 @@ internal sealed partial class PatchProfilerTool
             if (Thread.CurrentThread.ManagedThreadId != _mainThreadId)
                 return __exception;
 
-            var inst = _instance;
-            if (inst == null)
-                return __exception;
-
-            long end = Stopwatch.GetTimestamp();
+            if (!excludeNested)
+                end = Stopwatch.GetTimestamp();
             long ticks = end - __state.StartTicks;
+            long childTicks = 0;
+            if (excludeNested)
+            {
+                if (!CompletePatchMeasurement(__state.MeasurementSequence, __state.MeasurementIndex, end, out ticks, out childTicks))
+                {
+                    ticks = end - __state.StartTicks;
+                    childTicks = 0;
+                }
+            }
             if (ticks < 0)
                 return __exception;
 
-            double ms = ticks * MsPerTick;
+            var inst = _instance;
+            if (inst == null || !inst._profilingActive || inst._app.InstrumentationSafety.RestartRequired)
+                return __exception;
+
+            double inclusiveMs = ticks * MsPerTick;
+            double measuredMs = (excludeNested ? Math.Max(0L, ticks - childTicks) : ticks) * MsPerTick;
 
             bool gcSample = false;
 
-            if (ms >= GcCheckMinSampleMs)
+            if (inclusiveMs >= GcCheckMinSampleMs)
             {
                 gcSample =
                     GC.CollectionCount(0) != inst._lastObservedGc0 ||
@@ -82,7 +194,7 @@ internal sealed partial class PatchProfilerTool
             MethodBase activeTranspiledTarget = CurrentActiveTranspiledTarget();
 
             inst.SetCurrentRealtime(now);
-            inst.Record(__originalMethod, ms, frame, now, gcSample, activeTranspiledTarget);
+            inst.Record(__originalMethod, measuredMs, frame, now, gcSample, activeTranspiledTarget);
         }
         catch
         {
@@ -92,7 +204,9 @@ internal sealed partial class PatchProfilerTool
             if (__state.ActiveTranspiledTarget != null)
                 PopActiveTranspiledTarget(__state.ActiveTranspiledTarget);
 
-            TrimInjectedTranspilerCallStack(__state.TranspilerCallStackDepth);
+            TrimInjectedTranspilerCallStack(__state.TranspilerCallStackDepth, __state.TranspilerCallGroupDepth);
+            if (excludeNested)
+                CompletePatchProfilerOverhead(end);
         }
 
         return __exception;

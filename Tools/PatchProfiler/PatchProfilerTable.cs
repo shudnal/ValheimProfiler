@@ -208,6 +208,7 @@ internal sealed partial class PatchProfilerTool
         {
             DrawGuiLabel(ref x, y, _drawAvgTimeColumnWidth, height, FormatMs(snapshot.Avg1sMsPerFrame), _labelStyle);
             DrawGuiLabel(ref x, y, _drawAvgCountColumnWidth, height, FormatCount(snapshot.Avg1sCallsPerFrame), _labelStyle);
+            DrawGuiLabel(ref x, y, _drawAvgCallColumnWidth, height, FormatAverageCall(snapshot.Avg1sAverageCallMs), _labelStyle);
         }
         else
         {
@@ -221,6 +222,7 @@ internal sealed partial class PatchProfilerTool
         {
             DrawGuiLabel(ref x, y, _drawAvgTimeColumnWidth, height, FormatMs(summary.Avg1sMsPerFrame), _labelStyle);
             DrawGuiLabel(ref x, y, _drawAvgCountColumnWidth, height, FormatCount(summary.Avg1sCallsPerFrame), _labelStyle);
+            DrawGuiLabel(ref x, y, _drawAvgCallColumnWidth, height, FormatAverageCall(summary.Avg1sAverageCallMs), _labelStyle);
         }
         else
         {

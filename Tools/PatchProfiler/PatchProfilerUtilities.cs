@@ -169,6 +169,17 @@ internal sealed partial class PatchProfilerTool
         return $"{value:0.000}";
     }
 
+    private static string FormatAverageCall(double milliseconds)
+    {
+        if (milliseconds <= 0)
+            return "0 ns";
+        if (milliseconds >= 1.0)
+            return $"{milliseconds:0.###} ms";
+        if (milliseconds >= 0.001)
+            return $"{milliseconds * 1000.0:0.##} us";
+        return $"{milliseconds * 1000000.0:0} ns";
+    }
+
     private static string FormatRawMax(MaxAnalyticsSnapshot max)
     {
         string value = FormatMs(max.RawMaxMs);

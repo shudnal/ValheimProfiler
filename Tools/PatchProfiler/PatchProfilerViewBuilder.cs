@@ -39,6 +39,7 @@ internal sealed partial class PatchProfilerTool
             ? parsed is TableSortColumn.Mod or
                 TableSortColumn.AvgMsPerFrame or
                 TableSortColumn.AvgCallsPerFrame or
+                TableSortColumn.AvgCall or
                 TableSortColumn.PatchType or
                 TableSortColumn.Target or
                 TableSortColumn.PatchMethod
@@ -73,14 +74,16 @@ internal sealed partial class PatchProfilerTool
                 {
                     EntryId = kv.Key,
                     InstrumentedMethod = ctx.InstrumentedMethod,
-                    Snapshot = kv.Value.GetSnapshot(frame, now),
+                    Snapshot = _profilerView == ProfilerView.Avg1s
+                        ? kv.Value.GetFrameBudgetSnapshot(frame, now, FrameBudgetTargetFps)
+                        : kv.Value.GetSnapshot(frame, now),
                     Context = ctx
                 };
             })
             .Where(row => row != null);
 
         rows = _profilerView == ProfilerView.Avg1s
-            ? rows.Where(row => row.Snapshot.Avg1sFrames > 0 && row.Snapshot.Avg1sMsPerFrame > 0)
+            ? rows.Where(row => row.Snapshot.Avg1sWindowCalls > 0 && row.Snapshot.Avg1sMsPerFrame > 0)
             : rows.Where(row => row.Snapshot.MaxSnapshot.WindowSampleCount > 0 && row.Snapshot.MaxSnapshot.RawMaxMs > 0);
 
         return SortRows(rows);
@@ -125,6 +128,7 @@ internal sealed partial class PatchProfilerTool
             TableSortColumn.Mod => rows.OrderBy(GetRowModName, StringComparer.OrdinalIgnoreCase),
             TableSortColumn.AvgMsPerFrame => rows.OrderByDescending(row => row.Snapshot.Avg1sMsPerFrame),
             TableSortColumn.AvgCallsPerFrame => rows.OrderByDescending(row => row.Snapshot.Avg1sCallsPerFrame),
+            TableSortColumn.AvgCall => rows.OrderByDescending(row => row.Snapshot.Avg1sAverageCallMs),
             TableSortColumn.RawMax => rows.OrderByDescending(row => row.Snapshot.MaxSnapshot.RawMaxMs),
             TableSortColumn.SecondMax => rows.OrderByDescending(row => row.Snapshot.MaxSnapshot.SecondMaxMs),
             TableSortColumn.ThirdMax => rows.OrderByDescending(row => row.Snapshot.MaxSnapshot.ThirdMaxMs),
@@ -166,6 +170,7 @@ internal sealed partial class PatchProfilerTool
             TableSortColumn.Mod => groups.OrderBy(group => group.ModName, StringComparer.OrdinalIgnoreCase),
             TableSortColumn.AvgMsPerFrame => groups.OrderByDescending(group => group.Summary.Avg1sMsPerFrame),
             TableSortColumn.AvgCallsPerFrame => groups.OrderByDescending(group => group.Summary.Avg1sCallsPerFrame),
+            TableSortColumn.AvgCall => groups.OrderByDescending(group => group.Summary.Avg1sAverageCallMs),
             TableSortColumn.RawMax => groups.OrderByDescending(group => group.Summary.Max.RawMaxMs),
             TableSortColumn.SecondMax => groups.OrderByDescending(group => group.Summary.Max.SecondMaxMs),
             TableSortColumn.ThirdMax => groups.OrderByDescending(group => group.Summary.Max.ThirdMaxMs),
@@ -246,6 +251,9 @@ internal sealed partial class PatchProfilerTool
         {
             summary.Avg1sMsPerFrame = rows.Sum(row => row.Snapshot.Avg1sMsPerFrame);
             summary.Avg1sCallsPerFrame = rows.Sum(row => row.Snapshot.Avg1sCallsPerFrame);
+            summary.Avg1sAverageCallMs = summary.Avg1sCallsPerFrame > 0
+                ? summary.Avg1sMsPerFrame / summary.Avg1sCallsPerFrame
+                : 0;
             summary.Avg1sFrames = rows.Max(row => row.Snapshot.Avg1sFrames);
             return summary;
         }

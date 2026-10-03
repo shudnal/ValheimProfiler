@@ -16,6 +16,8 @@ internal sealed class RollingProfilerStat
 
     private readonly object _sync = new object();
 
+    private readonly bool _useSampleTimestamps;
+    private float _frameSampleRealtime;
     private int _frame = -1;
     private double _frameMs;
     private int _frameCalls;
@@ -35,8 +37,9 @@ internal sealed class RollingProfilerStat
     private bool _analyticsDirty;
     private RollingMaxSnapshot _maxSnapshot = RollingMaxSnapshot.Empty;
 
-    public RollingProfilerStat()
+    public RollingProfilerStat(bool useSampleTimestamps = false)
     {
+        _useSampleTimestamps = useSampleTimestamps;
         _analyticsBuckets = new AnalyticsBucket[MaxWindowSeconds];
         for (int i = 0; i < _analyticsBuckets.Length; i++)
             _analyticsBuckets[i] = new AnalyticsBucket();
@@ -57,6 +60,7 @@ internal sealed class RollingProfilerStat
         {
             SyncFrameInternal(frame, now);
 
+            _frameSampleRealtime = now;
             _frameMs += ms;
             _frameCalls++;
 
@@ -102,16 +106,48 @@ internal sealed class RollingProfilerStat
         }
     }
 
-    public RollingProfilerSnapshot GetSnapshot(int frame, float now)
+    public RollingProfilerSnapshot GetSnapshot(int frame, float now, int normalizationFrameCount = -1)
     {
         lock (_sync)
         {
             SyncFrameInternal(frame, now);
 
+            // Existing callers keep their original rendered-frame denominator. Patch and General
+            // Frame budget views use GetFrameBudgetSnapshot with a fixed target-FPS denominator.
+            int frames = normalizationFrameCount >= 0 ? normalizationFrameCount : _avgWindowFrames;
             return new RollingProfilerSnapshot
             {
-                Avg1sMsPerFrame = _avgWindowFrames > 0 ? _avgWindowMs / _avgWindowFrames : 0,
-                Avg1sCallsPerFrame = _avgWindowFrames > 0 ? (double)_avgWindowCalls / _avgWindowFrames : 0,
+                Avg1sMsPerFrame = frames > 0 ? _avgWindowMs / frames : 0,
+                Avg1sCallsPerFrame = frames > 0 ? (double)_avgWindowCalls / frames : 0,
+                Avg1sAverageCallMs = _avgWindowCalls > 0 ? _avgWindowMs / _avgWindowCalls : 0,
+                Avg1sWindowCalls = _avgWindowCalls,
+                Avg1sFrames = frames,
+                MaxSnapshot = _maxSnapshot
+            };
+        }
+    }
+
+    public RollingProfilerSnapshot GetFrameBudgetSnapshot(int frame, float now, int targetFps)
+    {
+        lock (_sync)
+        {
+            SyncFrameInternal(frame, now);
+
+            int denominator = Math.Max(1, targetFps);
+            double windowMs = _avgWindowMs;
+            int windowCalls = _avgWindowCalls;
+            if (_frameCalls > 0 && now - _frameSampleRealtime <= AvgWindowSec)
+            {
+                windowMs += _frameMs;
+                windowCalls += _frameCalls;
+            }
+
+            return new RollingProfilerSnapshot
+            {
+                Avg1sMsPerFrame = windowMs / denominator,
+                Avg1sCallsPerFrame = (double)windowCalls / denominator,
+                Avg1sAverageCallMs = windowCalls > 0 ? windowMs / windowCalls : 0,
+                Avg1sWindowCalls = windowCalls,
                 Avg1sFrames = _avgWindowFrames,
                 MaxSnapshot = _maxSnapshot
             };
@@ -123,6 +159,7 @@ internal sealed class RollingProfilerStat
         lock (_sync)
         {
             _frame = -1;
+            _frameSampleRealtime = 0f;
             _frameMs = 0;
             _frameCalls = 0;
 
@@ -173,7 +210,9 @@ internal sealed class RollingProfilerStat
     {
         var bucket = new Bucket
         {
-            Time = now,
+            // Optional sample timestamps prevent an infrequent method's old frame from being
+            // reintroduced into the current one-second window merely because its view was read.
+            Time = _useSampleTimestamps && _frameCalls > 0 ? _frameSampleRealtime : now,
             Ms = _frameMs,
             Calls = _frameCalls
         };
@@ -501,6 +540,8 @@ internal struct RollingProfilerSnapshot
 {
     public double Avg1sMsPerFrame;
     public double Avg1sCallsPerFrame;
+    public double Avg1sAverageCallMs;
+    public int Avg1sWindowCalls;
     public int Avg1sFrames;
     public RollingMaxSnapshot MaxSnapshot;
 }

@@ -19,8 +19,19 @@ internal sealed partial class PatchProfilerTool
     private struct TimingState
     {
         public long StartTicks;
+        public long MeasurementSequence;
+        public int MeasurementIndex;
         public MethodBase ActiveTranspiledTarget;
         public int TranspilerCallStackDepth;
+        public int TranspilerCallGroupDepth;
+    }
+
+    private struct PatchMeasurementFrame
+    {
+        public long Sequence;
+        public long StartTicks;
+        public long ChildTicks;
+        public long ProfilerPrefixTicks;
     }
 
     private sealed class PatchStat
@@ -33,6 +44,7 @@ internal sealed partial class PatchProfilerTool
         private readonly object _sync = new object();
 
         private int _frame = -1;
+        private float _frameSampleRealtime;
         private double _frameMs;
         private int _frameCalls;
 
@@ -73,6 +85,7 @@ internal sealed partial class PatchProfilerTool
             {
                 SyncFrameInternal(frame, now);
 
+                _frameSampleRealtime = now;
                 _frameMs += ms;
                 _frameCalls++;
 
@@ -128,6 +141,35 @@ internal sealed partial class PatchProfilerTool
                 {
                     Avg1sMsPerFrame = _avgWindowFrames > 0 ? _avgWindowMs / _avgWindowFrames : 0,
                     Avg1sCallsPerFrame = _avgWindowFrames > 0 ? (double)_avgWindowCalls / _avgWindowFrames : 0,
+                    Avg1sAverageCallMs = _avgWindowCalls > 0 ? _avgWindowMs / _avgWindowCalls : 0,
+                    Avg1sWindowCalls = _avgWindowCalls,
+                    Avg1sFrames = _avgWindowFrames,
+                    MaxSnapshot = _maxSnapshot
+                };
+            }
+        }
+
+        public PatchStatSnapshot GetFrameBudgetSnapshot(int frame, float now, int targetFps)
+        {
+            lock (_sync)
+            {
+                SyncFrameInternal(frame, now);
+
+                int denominator = Math.Max(1, targetFps);
+                double windowMs = _avgWindowMs;
+                int windowCalls = _avgWindowCalls;
+                if (_frameCalls > 0 && now - _frameSampleRealtime <= AvgWindowSec)
+                {
+                    windowMs += _frameMs;
+                    windowCalls += _frameCalls;
+                }
+
+                return new PatchStatSnapshot
+                {
+                    Avg1sMsPerFrame = windowMs / denominator,
+                    Avg1sCallsPerFrame = (double)windowCalls / denominator,
+                    Avg1sAverageCallMs = windowCalls > 0 ? windowMs / windowCalls : 0,
+                    Avg1sWindowCalls = windowCalls,
                     Avg1sFrames = _avgWindowFrames,
                     MaxSnapshot = _maxSnapshot
                 };
@@ -139,6 +181,7 @@ internal sealed partial class PatchProfilerTool
             lock (_sync)
             {
                 _frame = -1;
+                _frameSampleRealtime = 0f;
                 _frameMs = 0;
                 _frameCalls = 0;
 
@@ -189,7 +232,9 @@ internal sealed partial class PatchProfilerTool
         {
             var bucket = new Bucket
             {
-                Time = now,
+                // Preserve the time of sparse samples so opening or refreshing the view cannot
+                // move old work into the current one-second frame-budget window.
+                Time = _frameCalls > 0 ? _frameSampleRealtime : now,
                 Ms = _frameMs,
                 Calls = _frameCalls
             };
@@ -517,6 +562,8 @@ internal sealed partial class PatchProfilerTool
     {
         public double Avg1sMsPerFrame;
         public double Avg1sCallsPerFrame;
+        public double Avg1sAverageCallMs;
+        public int Avg1sWindowCalls;
         public int Avg1sFrames;
         public MaxAnalyticsSnapshot MaxSnapshot;
     }
@@ -634,6 +681,7 @@ internal sealed partial class PatchProfilerTool
     {
         public double Avg1sMsPerFrame;
         public double Avg1sCallsPerFrame;
+        public double Avg1sAverageCallMs;
         public int Avg1sFrames;
         public MaxAnalyticsSnapshot Max;
     }

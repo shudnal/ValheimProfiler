@@ -20,14 +20,13 @@ internal sealed partial class PatchProfilerTool
             GUILayout.BeginVertical();
 
             DrawToolbar();
+            _safetyReport.DrawRecoveryBanner(_app.InstrumentationSafety);
             GUILayout.Space(2f);
 
             GUILayout.BeginHorizontal();
 
-            MainTab newMainTab = (MainTab)GUILayout.Toolbar(
-                (int)_mainTab,
-                new[] { "Profiler", "Mods to profile", "Help" },
-                GUILayout.Width(390f));
+            MainTab newMainTab = (MainTab)_safetyReport.DrawTabs((int)_mainTab, "Mods to profile", 490f,
+                _app.InstrumentationSafety.RestartRequired);
 
             if (newMainTab != _mainTab)
             {
@@ -46,7 +45,7 @@ internal sealed partial class PatchProfilerTool
 
                 ProfilerView newView = (ProfilerView)GUILayout.Toolbar(
                     (int)_profilerView,
-                    new[] { "Over 1 sec", "Max over 60 sec" },
+                    new[] { "Frame budget", "Max over 60 sec" },
                     GUILayout.Width(290f));
 
                 if (newView != _profilerView)
@@ -55,6 +54,8 @@ internal sealed partial class PatchProfilerTool
                     MarkViewDirty();
                 }
 
+                GUILayout.Space(10f);
+                DrawTargetFpsField();
                 GUILayout.Space(10f);
 
                 bool newGroupByMod = ProfilerGui.ToggleLayout(
@@ -85,6 +86,22 @@ internal sealed partial class PatchProfilerTool
 
                 if (newIgnoreGcAllocations != _ignoreGcAllocations)
                     SetIgnoreGcAllocations(newIgnoreGcAllocations);
+
+                GUILayout.Space(6f);
+
+                bool newExcludeMeasuredNestedCalls = ProfilerGui.ToggleLayout(
+                    _theme,
+                    _excludeMeasuredNestedCalls,
+                    new GUIContent(
+                        "Exclude nested calls",
+                        "Subtract nested calls measured by Patch Profiler and the timing-bookkeeping performed around those nested measurements from the parent sample. Unmeasured nested calls remain included. Changing this option resets the current statistics."),
+                    145f,
+                    _labelStyle);
+
+                if (newExcludeMeasuredNestedCalls != _excludeMeasuredNestedCalls)
+                    SetExcludeMeasuredNestedCalls(newExcludeMeasuredNestedCalls);
+
+
             }
 
             GUILayout.EndHorizontal();
@@ -97,6 +114,9 @@ internal sealed partial class PatchProfilerTool
                     break;
                 case MainTab.ModsToProfile:
                     DrawModsTab();
+                    break;
+                case MainTab.Safety:
+                    _safetyReport.Draw(MainWindowHeight);
                     break;
                 default:
                     DrawHelpTab();
@@ -176,12 +196,12 @@ internal sealed partial class PatchProfilerTool
                         continue;
 
                     if (_stats.TryGetValue(candidate.EntryId, out PatchStat stat))
-                        calls.Add((candidate, stat.GetSnapshot(frame, now)));
+                        calls.Add((candidate, stat.GetFrameBudgetSnapshot(frame, now, FrameBudgetTargetFps)));
                 }
             }
 
             int sampledCalls = calls.Count(item =>
-                item.Snapshot.Avg1sFrames > 0 || item.Snapshot.MaxSnapshot.WindowSampleCount > 0);
+                item.Snapshot.Avg1sWindowCalls > 0 || item.Snapshot.MaxSnapshot.WindowSampleCount > 0);
             Label($"Transpilers: {ctx.TranspilerDetails.Count} | Detected runtime calls: {calls.Count} | Sampled: {sampledCalls}");
             Label("Detection is static. A call with 0 samples has not been observed since profiling started; only sampled entries appear in the main table.");
             GUILayout.Space(3f);
@@ -247,10 +267,10 @@ internal sealed partial class PatchProfilerTool
                         }
                     }
 
-                    if (snapshot.Avg1sFrames == 0 && max.WindowSampleCount == 0)
+                    if (snapshot.Avg1sWindowCalls == 0 && max.WindowSampleCount == 0)
                         Label("Status: no runtime samples yet. The target or this branch has not executed since profiling started.");
 
-                    Label($"Over 1 sec: {FormatMs(snapshot.Avg1sMsPerFrame)} ms/frame | {FormatCount(snapshot.Avg1sCallsPerFrame)} calls/frame");
+                    Label($"Frame budget @{FrameBudgetTargetFps} FPS: {FormatMs(snapshot.Avg1sMsPerFrame)} ms/frame | {FormatCount(snapshot.Avg1sCallsPerFrame)} calls/frame | {FormatAverageCall(snapshot.Avg1sAverageCallMs)} avg call");
                     Label($"Max over 60 sec: raw {FormatMs(max.RawMaxMs)} | 2nd {FormatMs(max.SecondMaxMs)} | 3rd {FormatMs(max.ThirdMaxMs)} | " +
                           $">p99 {max.AboveP99Count} avg {FormatMs(max.AvgAboveP99Ms)} | p99 {FormatMs(max.P99Ms)} | " +
                           $">p95 {max.AboveP95Count} avg {FormatMs(max.AvgAboveP95Ms)} | p95 {FormatMs(max.P95Ms)} | samples {max.WindowSampleCount}");
@@ -320,6 +340,25 @@ internal sealed partial class PatchProfilerTool
         };
     }
 
+    private void DrawTargetFpsField()
+    {
+        GUILayout.Label(new GUIContent("Target FPS:", "Fixed FPS target used by Frame budget. The last one second of accepted measured time and calls is divided by this value; current game FPS is not used."), _labelStyle, GUILayout.Width(72f));
+        const string controlName = "ValheimProfiler.Patch.TargetFps";
+        if (GUI.GetNameOfFocusedControl() != controlName)
+            _targetFpsText = FrameBudgetTargetFps.ToString();
+        GUI.SetNextControlName(controlName);
+        string value = GUILayout.TextField(_targetFpsText ?? FrameBudgetTargetFps.ToString(), GUILayout.Width(48f));
+        if (value != _targetFpsText)
+        {
+            _targetFpsText = value;
+            if (int.TryParse(value, out int parsed) && parsed >= 1 && parsed <= 1000 && parsed != _app.Config.FrameBudgetTargetFps.Value)
+            {
+                _app.Config.FrameBudgetTargetFps.Value = parsed;
+                MarkViewDirty();
+            }
+        }
+    }
+
     private void Label(string text, params GUILayoutOption[] options) =>
         GUILayout.Label(text ?? string.Empty, _labelStyle, options);
 
@@ -334,25 +373,58 @@ internal sealed partial class PatchProfilerTool
         GUILayout.BeginHorizontal();
 
         string listState = _listReady ? $"List: ready ({_stats.Count})" : "List: empty";
-        string profilingState = _profilingActive ? "Profiling: ON" : _statsFrozen ? "Profiling: PAUSED" : "Profiling: OFF";
+        string profilingState = _app.InstrumentationSafety.RestartRequired ? "Profiling: RECOVERY UNCERTAIN" :
+            _instrumentationTransition == InstrumentationTransition.Installing ? "Profiling: INSTALLING" :
+            _instrumentationTransition == InstrumentationTransition.Removing ? "Profiling: REMOVING" :
+            _instrumentationTransition == InstrumentationTransition.RollingBack ? "Profiling: ROLLING BACK" :
+            _profilingActive ? "Profiling: ON" : _statsFrozen ? "Profiling: PAUSED" : "Profiling: OFF";
         Label($"{listState} | {profilingState} | Status: {_status}", GUILayout.ExpandWidth(true));
 
-        string profilingButton = _profilingActive ? "Pause profiling" : "Start profiling";
-        if (GUILayout.Button(profilingButton, GUILayout.Width(125f)))
+        bool controlsEnabled = GUI.enabled;
+        GUI.enabled = controlsEnabled && !IsTransitioning;
+        bool newGradualProfilingStart = ProfilerGui.ToggleLayout(
+            _theme,
+            _gradualProfilingStart,
+            new GUIContent(
+                "Gradual start",
+                "Spread Harmony install/remove work across frames using a 400 ms / 2560 operation budget. Disable to process the complete transition in one Unity frame (one long freeze)."),
+            115f,
+            _labelStyle);
+        if (newGradualProfilingStart != _gradualProfilingStart)
+            SetGradualProfilingStart(newGradualProfilingStart);
+        GUILayout.Space(6f);
+        if (_instrumentationTransition == InstrumentationTransition.Installing)
         {
-            if (_profilingActive)
-                StopProfiling();
-            else
-                StartProfiling();
+            GUI.enabled = controlsEnabled;
+            if (GUILayout.Button("Cancel start", GUILayout.Width(125f)))
+                RequestCancelStart();
+        }
+        else
+        {
+            GUI.enabled = controlsEnabled && !IsTransitioning && (_profilingActive || !_app.InstrumentationSafety.RestartRequired);
+            bool toggleProfiling = GUILayout.Button(new GUIContent(_profilingActive ? "Pause profiling" : "Start profiling",
+                _app.InstrumentationSafety.RestartRequired ? _app.InstrumentationSafety.RestartMessage : "Install or remove this profiler's measurement hooks."), GUILayout.Width(125f));
+            if (toggleProfiling)
+            {
+                if (_profilingActive)
+                    StopProfiling();
+                else
+                    StartProfiling();
+            }
         }
 
+        GUI.enabled = controlsEnabled && !IsTransitioning;
         if (GUILayout.Button("Reset stats", GUILayout.Width(100f)))
             ResetAllStats();
 
+        GUI.enabled = controlsEnabled;
         if (GUILayout.Button("Close", GUILayout.Width(70f)))
             IsWindowVisible = false;
 
         GUILayout.EndHorizontal();
+
+        if (IsTransitioning)
+            ProfilerGui.ProgressBar(_theme, TransitionProgress, TransitionProgressText);
     }
 
 
@@ -367,6 +439,32 @@ internal sealed partial class PatchProfilerTool
         _status = value
             ? "GC-associated samples are ignored. Statistics reset."
             : "GC-associated samples are included. Statistics reset.";
+    }
+
+    private void SetExcludeMeasuredNestedCalls(bool value)
+    {
+        if (_excludeMeasuredNestedCalls == value)
+            return;
+
+        _excludeMeasuredNestedCalls = value;
+        _app.Config.PatchProfilerExcludeMeasuredNestedCalls.Value = value;
+        ResetPatchMeasurementStack();
+        ResetAllStats();
+        _status = value
+            ? "Measured nested calls are excluded from parent timings. Statistics reset."
+            : "Measured nested calls are included in parent timings. Statistics reset.";
+    }
+
+    private void SetGradualProfilingStart(bool value)
+    {
+        if (_gradualProfilingStart == value)
+            return;
+
+        _gradualProfilingStart = value;
+        _app.Config.PatchProfilerGradualProfilingStart.Value = value;
+        _status = value
+            ? "Gradual instrumentation transitions use the 400 ms frame budget."
+            : "Instrumentation transitions run in one Unity frame.";
     }
 
     private void ResetAllStats()

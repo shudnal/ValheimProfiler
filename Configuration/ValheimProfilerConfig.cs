@@ -11,6 +11,10 @@ internal sealed class ValheimProfilerConfig
     internal static readonly Vector2 DefaultPatchWindowPosition = new(80f, 80f);
     internal static readonly Vector2 DefaultPatchWindowSize = new(-1f, 600f);
     internal static readonly Vector2 DefaultTranspilerWindowPosition = new(120f, 120f);
+    internal static readonly Vector2 DefaultGeneralMethodWindowPosition = new(100f, 90f);
+    internal static readonly Vector2 DefaultGeneralMethodWindowSize = new(-1f, 650f);
+    internal static readonly Vector2 DefaultGeneralCallTreeWindowPosition = new(150f, 120f);
+    internal static readonly Vector2 DefaultGeneralCallTreeWindowSize = new(-1f, 650f);
     internal static readonly Vector2 DefaultMonoBehaviourWindowPosition = new(110f, 90f);
     internal static readonly Vector2 DefaultMonoBehaviourCallWindowPosition = new(140f, 110f);
     internal static readonly Vector2 DefaultValheimUpdateWindowPosition = new(155f, 120f);
@@ -29,10 +33,23 @@ internal sealed class ValheimProfilerConfig
     {
         ConfigFile = config;
 
+        LoggingEnabled = config.Bind("General", "Logging enabled", false,
+            "Add compact method failures and grouped safety skips for Patch Profiler and General Method Profiler. Each operation displays at most 10 failure identities and 8 skip groups; installation and cleanup failures share one method line. Full method details and exceptions go to rotating per-operation .log files in the profiler config directory. Disabled output contains aggregate counts and brief session errors. Uncertain recovery always emits one mandatory restart warning. The setting is captured when an operation starts. Safety checks, Skipped methods and the separate Write crash trace option are independent of this setting.");
+
+        FrameBudgetTargetFps = config.Bind(
+            "General",
+            "Frame budget target FPS",
+            60,
+            new ConfigDescription(
+                "Target FPS used to normalize the Frame budget views in Patch Profiler and General Method Profiler. The rolling one-second measured time and call count are divided by this fixed target, not by the game's current FPS. Changing it does not reset captured statistics.",
+                new AcceptableValueRange<int>(1, 1000)));
+
         GlobalHotkey = config.Bind("General", "Toggle UI", new KeyboardShortcut(KeyCode.F7),
             "Show or hide the Valheim Profiler user interface without stopping active profilers.");
         PatchProfilerHotkey = config.Bind("General", "Toggle Patch Profiler", new KeyboardShortcut(KeyCode.F8),
             "Show or hide the Patch Profiler window.");
+        GeneralMethodProfilerHotkey = config.Bind("General", "Toggle General Method Profiler", new KeyboardShortcut(KeyCode.None),
+            "Show or hide the General Method Profiler window. No default shortcut is assigned.");
         MonoBehaviourProfilerHotkey = config.Bind("General", "Toggle MonoBehaviour Frame Profiler", new KeyboardShortcut(KeyCode.None),
             "Show or hide the MonoBehaviour Frame Profiler window. No default shortcut is assigned.");
         MonoBehaviourCallProfilerHotkey = config.Bind("General", "Toggle MonoBehaviour Call Profiler", new KeyboardShortcut(KeyCode.None),
@@ -66,9 +83,9 @@ internal sealed class ValheimProfilerConfig
 
         PatchProfilerAvgSortColumn = config.Bind(
             "Patch Profiler",
-            "Over 1 sec sort column",
+            "Frame budget sort column",
             "AvgMsPerFrame",
-            "Descending sort column restored when the Patch Profiler opens the Over 1 sec view.");
+            "Descending sort column restored when the Patch Profiler opens the Frame budget view.");
         PatchProfilerMaxSortColumn = config.Bind(
             "Patch Profiler",
             "Max over 60 sec sort column",
@@ -79,6 +96,59 @@ internal sealed class ValheimProfilerConfig
             "Ignore gc allocations",
             false,
             "Discard an entire measured sample when the Patch Profiler GC heuristic detects a garbage collection during that sample. Discarded samples do not affect calls, averages, maxima, percentiles, sample counts, or GC sample counts.");
+        PatchProfilerExcludeMeasuredNestedCalls = config.Bind(
+            "Patch Profiler",
+            "Exclude measured nested calls",
+            false,
+            "Subtract nested calls that are also measured by Patch Profiler, plus Patch Profiler timing-bookkeeping performed around those nested measurements, from the parent sample. Unmeasured nested calls remain included. Changing this option resets statistics.");
+        PatchProfilerGradualProfilingStart = config.Bind(
+            "Patch Profiler",
+            "Gradual profiling start",
+            true,
+            "Spread Patch Profiler Harmony installation and removal across frames using a 400 ms / 2560 operation budget. Disable to process the complete transition in one Unity frame.");
+        PatchProfilerCrashTrace = config.Bind(
+            "Patch Profiler diagnostics",
+            "Write crash trace",
+            false,
+            "Disabled by default. Write and flush each discovery/patch installation step to a separate file to identify native crashes. Enable only for an investigation and disable afterward; cache resets and struct safety remain active independently.");
+        PatchProfilerInstrumentationLimit = config.Bind(
+            "Patch Profiler diagnostics",
+            "Limit instrumented methods",
+            0,
+            new ConfigDescription(
+                "0 = unlimited. Methods are always sorted deterministically. Specify 1..N to stop installing additional methods after N candidates, including safety skips. This intentionally produces partial profiling data.",
+                new AcceptableValueRange<int>(0, 100000)));
+        GeneralMethodProfilerAvgSortColumn = config.Bind("General Method Profiler", "Frame budget sort column", "AvgMsPerFrame",
+            "Restored sort column for Frame budget. Text columns (Mod, Class, Method) sort ascending; numeric columns sort descending.");
+        GeneralMethodProfilerMaxSortColumn = config.Bind("General Method Profiler", "Max over 60 sec sort column", "ThirdMax",
+            "Restored sort column. Text columns (Mod, Class, Method) sort ascending; numeric columns sort descending.");
+        GeneralMethodCallTreeSortColumn = config.Bind("General Method Profiler", "Call tree sort column", "Inclusive",
+            "Descending context sort: Inclusive, Self, Calls, RawMax or Name.");
+        GeneralMethodProfilerIgnoreGcAllocations = config.Bind("General Method Profiler", "Ignore gc allocations", false,
+            "Discard GC-associated samples before any method or context statistics are updated. Uses the existing GC-collection heuristic, not allocation-byte tracking.");
+        GeneralMethodProfilerExcludeMeasuredNestedCalls = config.Bind("General Method Profiler", "Exclude measured nested calls", false,
+            "Subtract nested calls that are also measured by General Method Profiler, plus profiler timing-bookkeeping performed around those nested measurements, from method and context timing statistics. Unmeasured nested calls remain included. Changing this option resets statistics.");
+        GeneralMethodProfilerGradualProfilingStart = config.Bind("General Method Profiler", "Gradual profiling start", true,
+            "Spread General Method Profiler Harmony installation and removal across frames using a 400 ms / 2560 operation budget. Disable to process the complete transition in one Unity frame.");
+        GeneralMethodProfilerGroupByMod = config.Bind("General Method Profiler", "Group by mod", true,
+            "Group measured methods by their owning BepInEx plugin assembly.");
+        GeneralMethodProfilerView = config.Bind("General Method Profiler", "Profiler view", "MaxOver60Sec",
+            "Restored timing view: FrameBudget or MaxOver60Sec. Legacy Avg1s is treated as FrameBudget.");
+        GeneralMethodSelectionSearch = config.Bind("General Method Profiler", "Selection search", string.Empty,
+            "Restored mod/module/class/method selection filter. Does not change saved selection.");
+        GeneralMethodProfilerSearch = config.Bind("General Method Profiler", "Profiler search", string.Empty,
+            "Restored method table filter. Does not change instrumentation.");
+        GeneralMethodSelectedOnly = config.Bind("General Method Profiler", "Selected only", false,
+            "Show only selected methods in the selection view.");
+        GeneralMethodShowUnavailable = config.Bind("General Method Profiler", "Show unavailable", false,
+            "Show excluded methods with their safety/discovery reasons.");
+        GeneralMethodMaxTreeNodes = config.Bind("General Method Profiler", "Maximum call tree nodes", 4096,
+            new ConfigDescription("Maximum retained full-path call contexts. New paths beyond this cap keep method aggregate measurements but no tree nodes. Applied on next Start.",
+                new AcceptableValueRange<int>(256, 32768)));
+        GeneralMethodMaxCallDepth = config.Bind("General Method Profiler", "Maximum call depth", 128,
+            new ConfigDescription("Maximum simultaneous instrumented invocations. Deeper calls are omitted from both aggregates and the call tree and counted in diagnostics. Applied on next Start.",
+                new AcceptableValueRange<int>(16, 1024)));
+
         MonoBehaviourProfilerAvgSortColumn = config.Bind(
             "MonoBehaviour Frame Profiler",
             "Over 1 sec sort column",
@@ -235,6 +305,14 @@ internal sealed class ValheimProfilerConfig
             "Logical position of the transpiler details window.");
         TranspilerWindowSize = config.Bind("Layout", "Transpiler details size", DefaultTranspilerWindowSize,
             "Logical size of the transpiler details window. A non-positive width uses 25% of the logical screen width.");
+        GeneralMethodWindowPosition = config.Bind("Layout", "General Method Profiler position", DefaultGeneralMethodWindowPosition,
+            "Logical position of the General Method Profiler window.");
+        GeneralMethodWindowSize = config.Bind("Layout", "General Method Profiler size", DefaultGeneralMethodWindowSize,
+            "Logical window size. A non-positive width uses 75% of the logical screen width.");
+        GeneralCallTreeWindowPosition = config.Bind("Layout", "General call tree position", DefaultGeneralCallTreeWindowPosition,
+            "Logical position of the General Method Profiler call tree window.");
+        GeneralCallTreeWindowSize = config.Bind("Layout", "General call tree size", DefaultGeneralCallTreeWindowSize,
+            "Logical call tree size. A non-positive width uses 75% of the logical screen width.");
         MonoBehaviourWindowPosition = config.Bind("Layout", "MonoBehaviour Frame Profiler position", DefaultMonoBehaviourWindowPosition,
             "Logical position of the MonoBehaviour Frame Profiler window.");
         MonoBehaviourWindowSize = config.Bind("Layout", "MonoBehaviour Frame Profiler size", DefaultMonoBehaviourWindowSize,
@@ -263,8 +341,11 @@ internal sealed class ValheimProfilerConfig
 
     internal ConfigFile ConfigFile { get; }
 
+    internal ConfigEntry<bool> LoggingEnabled { get; }
+    internal ConfigEntry<int> FrameBudgetTargetFps { get; }
     internal ConfigEntry<KeyboardShortcut> GlobalHotkey { get; }
     internal ConfigEntry<KeyboardShortcut> PatchProfilerHotkey { get; }
+    internal ConfigEntry<KeyboardShortcut> GeneralMethodProfilerHotkey { get; }
     internal ConfigEntry<KeyboardShortcut> MonoBehaviourProfilerHotkey { get; }
     internal ConfigEntry<KeyboardShortcut> MonoBehaviourCallProfilerHotkey { get; }
     internal ConfigEntry<KeyboardShortcut> LogMonitorHotkey { get; }
@@ -281,6 +362,24 @@ internal sealed class ValheimProfilerConfig
     internal ConfigEntry<string> PatchProfilerAvgSortColumn { get; }
     internal ConfigEntry<string> PatchProfilerMaxSortColumn { get; }
     internal ConfigEntry<bool> PatchProfilerIgnoreGcAllocations { get; }
+    internal ConfigEntry<bool> PatchProfilerExcludeMeasuredNestedCalls { get; }
+    internal ConfigEntry<bool> PatchProfilerGradualProfilingStart { get; }
+    internal ConfigEntry<bool> PatchProfilerCrashTrace { get; }
+    internal ConfigEntry<int> PatchProfilerInstrumentationLimit { get; }
+    internal ConfigEntry<string> GeneralMethodProfilerAvgSortColumn { get; }
+    internal ConfigEntry<string> GeneralMethodProfilerMaxSortColumn { get; }
+    internal ConfigEntry<string> GeneralMethodCallTreeSortColumn { get; }
+    internal ConfigEntry<bool> GeneralMethodProfilerIgnoreGcAllocations { get; }
+    internal ConfigEntry<bool> GeneralMethodProfilerExcludeMeasuredNestedCalls { get; }
+    internal ConfigEntry<bool> GeneralMethodProfilerGradualProfilingStart { get; }
+    internal ConfigEntry<bool> GeneralMethodProfilerGroupByMod { get; }
+    internal ConfigEntry<string> GeneralMethodProfilerView { get; }
+    internal ConfigEntry<string> GeneralMethodSelectionSearch { get; }
+    internal ConfigEntry<string> GeneralMethodProfilerSearch { get; }
+    internal ConfigEntry<bool> GeneralMethodSelectedOnly { get; }
+    internal ConfigEntry<bool> GeneralMethodShowUnavailable { get; }
+    internal ConfigEntry<int> GeneralMethodMaxTreeNodes { get; }
+    internal ConfigEntry<int> GeneralMethodMaxCallDepth { get; }
     internal ConfigEntry<string> MonoBehaviourProfilerAvgSortColumn { get; }
     internal ConfigEntry<string> MonoBehaviourProfilerMaxSortColumn { get; }
     internal ConfigEntry<bool> MonoBehaviourProfilerIgnoreGcAllocations { get; }
@@ -321,6 +420,10 @@ internal sealed class ValheimProfilerConfig
     internal ConfigEntry<Vector2> PatchWindowSize { get; }
     internal ConfigEntry<Vector2> TranspilerWindowPosition { get; }
     internal ConfigEntry<Vector2> TranspilerWindowSize { get; }
+    internal ConfigEntry<Vector2> GeneralMethodWindowPosition { get; }
+    internal ConfigEntry<Vector2> GeneralMethodWindowSize { get; }
+    internal ConfigEntry<Vector2> GeneralCallTreeWindowPosition { get; }
+    internal ConfigEntry<Vector2> GeneralCallTreeWindowSize { get; }
     internal ConfigEntry<Vector2> MonoBehaviourWindowPosition { get; }
     internal ConfigEntry<Vector2> MonoBehaviourWindowSize { get; }
     internal ConfigEntry<Vector2> MonoBehaviourCallWindowPosition { get; }
