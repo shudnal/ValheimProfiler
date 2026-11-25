@@ -1,6 +1,6 @@
 ﻿{
     "name":  "ValheimProfiler",
-    "version_number":  "1.1.13",
+    "version_number":  "1.1.14",
     "website_url":  "https://github.com/shudnal/ValheimProfiler",
     "description":  "In-game Valheim profiling toolkit for Harmony patches, general methods and call trees, MonoBehaviour callbacks, update loops, logs, and dedicated-server network diagnostics.",
     "dependencies":  [

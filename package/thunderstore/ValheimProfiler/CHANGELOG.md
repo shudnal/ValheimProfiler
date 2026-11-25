@@ -1,3 +1,7 @@
+# 1.1.14
+
+- Updated for Valheim 1.0.30.
+
 # 1.1.13
 
 - Added General Method Profiler with mod/class/method selection, call-tree navigation, and inclusive/self timing.

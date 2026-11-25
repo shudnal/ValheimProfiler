@@ -487,7 +487,7 @@ internal static class NetworkProfilerInstrumentation
             }
 
             bool mutation = false;
-            if ((method.Name == nameof(ZDO.Set) || method.Name == nameof(ZDO.Update)) && parameters.Length > 0 &&
+            if (method.Name == nameof(ZDO.Set) && parameters.Length > 0 &&
                 parameters[0].ParameterType == typeof(int) &&
                 !(method.Name == nameof(ZDO.Set) && parameters.Length > 1 && parameters[1].ParameterType == typeof(bool)))
                 mutation = true;
